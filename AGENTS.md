@@ -217,9 +217,9 @@ groups it covers, e.g. `Slice 1: load section, waveform, persistence (R1–R5, R
 
 | Slice | Scope | Requirement groups |
 |---|---|---|
-| 1 Load | Lua helper with all checks, track creation, live-ready; JSFX loading with progress, overview waveform, persistence and reload, missing file | R1, R2, R3, R5, R7.1, R22 |
+| 1 Load | Lua helper with all checks, track creation, live-ready; JSFX loading with progress, overview waveform, persistence and reload, missing file | R1, R3, R4.3, R5, R7.1, R22 |
 | 2 Play | 16 pads by mouse and MIDI notes 36–51, Hold/Trigger, Mono/Poly, click-free ramps, velocity | R15, R16, R17.11–17.12, R17.18 |
-| 3 Chop | lazy chop, cue handles, main waveform with zoom/freeze, scrub, delete, Slicer | R6, R7, R9, R10, R11, R13 |
+| 3 Chop | lazy chop, cue handles, main waveform with zoom/freeze, scrub, delete, Slicer, cues kept and clamped on swap | R2, R6, R7, R9, R10, R11, R13 |
 | 4 SLAB | Learn, dial start / Shift+dial end, arrows, app buttons, encoders, touch strip | R20, R21 |
 | 5 Rest | cue parameters, loops, beatgrid + analysis, Find samples, selection, favourites, undo, move/copy/rename | R4, R8, R12, R14, R17, R18, R19 |
 

@@ -1,0 +1,312 @@
+desc:Slab Sampler
+// Working title (Q13): the name lives here, in NAME in SlabSampler_Load.lua
+// and in the README. Behaviour: doc/ears.md, build notes: AGENTS.md.
+options:gmem=SlabSampler
+options:maxmem=2097152
+
+// Hidden: the load action writes a random token here so that only this
+// instance answers its gmem request (gmem is shared by all instances).
+slider1:0<0,1000000,1>-load token
+
+in_pin:none
+out_pin:Left
+out_pin:Right
+
+@init
+// @init also runs on every playback start unless this is set, and must
+// never reset a loaded sample
+ext_noinit = 1;
+
+// gmem layout shared with SlabSampler_Load.lua
+G_REQ = 0; G_TOKEN = 1; G_START = 2; G_LEN = 3; G_PATHLEN = 4; G_PATH = 16;
+
+// memory regions
+BUDGET = 1587600;                 // 18 s x 44.1 kHz x 2 ch in sample values (C5, R1.13)
+BUF = 0;
+SCRATCH = 1600000;                // discard area while reading up to the section start
+CHUNK = 65536;                    // values per block; verified dropout-free in the probe
+PEAKS = 1700000; NPEAKS = 2048;   // overview waveform, computed once per load
+
+// Source states. EMPTY is 0 so a new instance starts empty without @init
+// assigning state, which would wipe a loaded sample on a samplerate change.
+S_EMPTY = 0; S_LOADING = 1; S_PEAKS = 2; S_READY = 3; S_MISSING = 4;
+
+// one dark theme, colours defined once
+C_BG = 0x18181b; C_PANEL = 0x232327; C_FRAME = 0x3a3a40; C_TEXT = 0xe8e8ea;
+C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
+C_BTN = 0x34343a; C_BTN_HOT = 0x46464e;
+
+function close_file()
+(
+  h >= 0 ? file_close(h);
+  h = -1;
+);
+
+function reset_cues()
+(
+  // cues arrive in slice 3; a fresh load starts without any (R1.3)
+  cue_count = 0;
+);
+
+function show_error(text)
+(
+  strcpy(#err, text);
+  has_err = 1;
+);
+
+function eject()
+(
+  close_file();
+  state = S_EMPTY;
+  has_source = 0;
+  has_err = 0;
+  strcpy(#path, "");
+  reset_cues();                  // R3.2
+);
+
+// Validate the requested file fully before touching the buffer, so a failed
+// load leaves the current source playable. On project reopen a file that
+// cannot be opened is "missing": keep path, section and cues (R5.3, R5.4).
+function request_load(reopen)
+  local(vh, rnch, rfsr, ravail, rskip, rwant)
+(
+  vh = file_open(#req_path);
+  vh < 0 ? (
+    reopen ? (
+      close_file();
+      strcpy(#path, #req_path);
+      sec_start = req_start; sec_len = req_len;
+      has_source = 1;
+      has_err = 0;
+      state = S_MISSING;
+    ) : show_error("The file could not be opened.");
+  ) : (
+    rnch = 0; rfsr = 0;
+    file_riff(vh, rnch, rfsr);
+    ravail = file_avail(vh);
+    rskip = floor(req_start * rfsr + 0.5) * rnch;
+    rwant = floor(req_len * rfsr + 0.5) * rnch;
+    ravail >= 0 && rskip + rwant > ravail ? rwant = max(0, ravail - rskip);
+
+    rnch < 1 || rfsr < 1 ? (
+      file_close(vh);
+      show_error("The file is not readable as WAV or AIFF audio.");                 // R1.9
+    ) : rnch > 2 ? (
+      file_close(vh);
+      show_error("The file has more than two channels.");                           // R1.15
+    ) : rwant < rnch ? (
+      file_close(vh);
+      show_error("The selected section contains no audio.");
+    ) : rwant > BUDGET ? (
+      file_close(vh);
+      show_error(sprintf(#tmp, "The section is %.1f s long; the maximum for this file is %.1f s.",
+        req_len, BUDGET / (rfsr * rnch)));                                          // R1.8
+    ) : (
+      close_file();
+      h = vh;
+      // a load into an instance that has a source is a swap and keeps cues (R2.1)
+      !has_source ? reset_cues();
+      has_source = 1;
+      has_err = 0;
+      strcpy(#path, #req_path);
+      nch = rnch; fsr = rfsr;
+      sec_start = req_start;
+      sec_len = rwant / rnch / rfsr;
+      skip_total = rskip; skipped = 0;
+      want = rwant; got = 0;
+      state = S_LOADING;
+    );
+  );
+);
+
+function begin_peaks()
+(
+  frames = floor(got / nch);
+  memset(PEAKS, 0, NPEAKS);
+  pk_frame = 0;
+  state = S_PEAKS;
+);
+
+// One chunk per block: file_* has no seek, so the section start is reached
+// by reading past it into SCRATCH.
+function load_step()
+  local(n, r, i, b, v)
+(
+  state == S_LOADING ? (
+    skipped < skip_total ? (
+      n = min(CHUNK, skip_total - skipped);
+      r = file_mem(h, SCRATCH, n);
+      skipped += r;
+      r < n ? (
+        close_file();
+        state = S_MISSING;
+        show_error("Reading the file stopped early.");
+      );
+    ) : (
+      n = min(CHUNK, want - got);
+      r = file_mem(h, BUF + got, n);
+      got += r;
+      r < n || got >= want ? (
+        close_file();
+        begin_peaks();
+      );
+    );
+  ) : state == S_PEAKS ? (
+    i = pk_frame;
+    loop(min(CHUNK, frames - pk_frame),
+      b = floor(i * NPEAKS / frames);
+      v = abs(BUF[i * nch]);
+      nch > 1 ? v = max(v, abs(BUF[i * nch + 1]));
+      PEAKS[b] = max(PEAKS[b], v);
+      i += 1;
+    );
+    pk_frame = i;
+    pk_frame >= frames ? state = S_READY;
+  );
+);
+
+function progress()
+(
+  state == S_LOADING ? 0.9 * (skipped + got) / max(1, skip_total + want)
+  : state == S_PEAKS ? 0.9 + 0.1 * pk_frame / max(1, frames)
+  : 1;
+);
+
+@block
+gmem[G_REQ] != last_req ? (
+  last_req = gmem[G_REQ];
+  slider1 > 0 && gmem[G_TOKEN] == slider1 ? (
+    // %c keeps the path's UTF-8 bytes intact
+    strcpy(#req_path, "");
+    i = 0;
+    loop(gmem[G_PATHLEN], sprintf(#ch, "%c", gmem[G_PATH + i]); strcat(#req_path, #ch); i += 1);
+    req_start = gmem[G_START];
+    req_len = gmem[G_LEN];
+    request_load(0);
+  );
+);
+reload_pending ? (
+  reload_pending = 0;
+  request_load(1);
+);
+state == S_LOADING || state == S_PEAKS ? load_step();
+
+@sample
+// silent until pads arrive in slice 2
+spl0 = spl1 = 0;
+
+@serialize
+file_avail(0) >= 0 ? (
+  // reading: project open, or an undo point being restored
+  ser_ver = 0;
+  file_var(0, ser_ver);
+  ser_ver == 1 ? (
+    file_string(0, #ser_path);
+    file_var(0, ser_start);
+    file_var(0, ser_len);
+    file_var(0, ser_has);
+    ser_has ? (
+      // undo restores run this too: only reload when the source really changed
+      !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
+        strcpy(#req_path, #ser_path);
+        req_start = ser_start;
+        req_len = ser_len;
+        reload_pending = 1;
+      );
+    ) : has_source ? eject();
+  );
+) : (
+  ser_ver = 1;
+  file_var(0, ser_ver);
+  strcpy(#ser_path, #path);
+  file_string(0, #ser_path);
+  file_var(0, sec_start);
+  file_var(0, sec_len);
+  file_var(0, has_source);
+);
+
+@gfx 900 360
+function rgb(c) ( gfx_set(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255); );
+
+function text_at(x, y, s) ( gfx_x = x; gfx_y = y; gfx_drawstr(s); );
+
+// file name without folders, for the header (R1.2)
+function basename(src, dst) local(i, c, cut)
+(
+  cut = 0; i = 0;
+  loop(strlen(src), c = str_getchar(src, i); c == 47 || c == 92 ? cut = i + 1; i += 1);
+  strcpy_substr(dst, src, cut);
+);
+
+function button(x, y, w, hh, label) local(hot, clicked)
+(
+  hot = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + hh;
+  rgb(hot ? C_BTN_HOT : C_BTN); gfx_rect(x, y, w, hh);
+  rgb(C_TEXT);
+  gfx_measurestr(label, tw, th);
+  text_at(x + (w - tw) / 2, y + (hh - th) / 2, label);
+  clicked = hot && (mouse_cap & 1) && !(last_cap & 1);
+  clicked;
+);
+
+rgb(C_BG); gfx_rect(0, 0, gfx_w, gfx_h);
+pad = 12;
+
+// header: file name, length and format, eject
+hdr_h = 52;
+rgb(C_PANEL); gfx_rect(0, 0, gfx_w, hdr_h);
+gfx_setfont(1, "Arial", 17);
+has_source ? (
+  basename(#path, #name);
+  rgb(C_TEXT); text_at(pad, 8, #name);
+  gfx_setfont(2, "Arial", 13);
+  rgb(C_DIM);
+  state == S_MISSING ? text_at(pad, 30, "source missing")
+  : state == S_READY ? text_at(pad, 30, sprintf(#t, "%d:%06.3f  |  %g kHz  |  %s",
+      floor(sec_len / 60), sec_len - floor(sec_len / 60) * 60, fsr / 1000, nch == 1 ? "mono" : "stereo"))
+  : text_at(pad, 30, "loading ...");
+  gfx_setfont(2, "Arial", 13);
+  button(gfx_w - pad - 70, 13, 70, 26, "Eject") ? eject();                  // R3.1
+) : (
+  rgb(C_DIM); text_at(pad, 17, "No source loaded");
+);
+
+// overview of the whole loaded section with the waveform (R7.1)
+ov_x = pad; ov_y = hdr_h + pad; ov_w = gfx_w - 2 * pad; ov_h = 110;
+rgb(C_PANEL); gfx_rect(ov_x, ov_y, ov_w, ov_h);
+gfx_setfont(2, "Arial", 13);
+state == S_READY ? (
+  rgb(C_WAVE);
+  mid = ov_y + ov_h / 2;
+  x = 0;
+  loop(ov_w,
+    a = floor(x * NPEAKS / ov_w); b = max(a + 1, floor((x + 1) * NPEAKS / ov_w));
+    m = 0; j = a;
+    loop(b - a, m = max(m, PEAKS[j]); j += 1);
+    gfx_line(ov_x + x, mid - m * (ov_h / 2 - 2), ov_x + x, mid + m * (ov_h / 2 - 2));
+    x += 1;
+  );
+) : state == S_LOADING || state == S_PEAKS ? (
+  // R4.3
+  bar_y = ov_y + ov_h / 2 - 4;
+  rgb(C_FRAME); gfx_rect(ov_x + 40, bar_y, ov_w - 80, 8);
+  rgb(C_WAVE); gfx_rect(ov_x + 40, bar_y, (ov_w - 80) * progress(), 8);
+  rgb(C_DIM); text_at(ov_x + 40, bar_y - 22, "Loading ...");
+) : state == S_MISSING ? (
+  // R5.3, R5.5
+  rgb(C_WARN); text_at(ov_x + 16, ov_y + 20, "The source file is missing:");
+  rgb(C_TEXT); text_at(ov_x + 16, ov_y + 40, #path);
+  rgb(C_DIM); text_at(ov_x + 16, ov_y + 72, "Select an item and run \"SlabSampler_Load.lua\" to use another file. Cues are kept.");
+) : (
+  // R3.3
+  rgb(C_DIM);
+  text_at(ov_x + 16, ov_y + 30, "Select an audio item (WAV or AIFF) in REAPER and run the action");
+  text_at(ov_x + 16, ov_y + 50, "\"SlabSampler_Load.lua\" to load it here.");
+);
+
+has_err ? (
+  rgb(C_ERR); gfx_setfont(2, "Arial", 13);
+  text_at(pad, ov_y + ov_h + 10, #err);
+);
+
+last_cap = mouse_cap;
