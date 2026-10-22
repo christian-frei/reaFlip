@@ -1,14 +1,13 @@
--- Slab Sampler (working title): load the selected item's audio section into
--- the Slab Sampler JSFX. The plugin does all slicing; this script only finds
+-- ReaFlip: load the selected item's audio section into the ReaFlip JSFX. The plugin does all slicing; this script only finds
 -- the file and section, and makes the instrument track ready to play live.
 
-local NAME = "Slab Sampler" -- working title (Q13): also the JSFX desc and track name
-local GMEM = "SlabSampler"
-local FX_NAMES = { "JS:" .. NAME, "JS:SlabSampler.jsfx", "JS:SlabSampler" }
+local NAME = "ReaFlip" -- also the JSFX desc and the track name
+local GMEM = "ReaFlip"
+local FX_NAMES = { "JS:" .. NAME, "JS:ReaFlip.jsfx", "JS:ReaFlip" }
 local BUDGET = 18 * 44100 * 2 -- sample values: 18 s of 44.1 kHz stereo (C5, R1.13)
 local PATH_MAX = 4000
 
--- gmem layout shared with SlabSampler.jsfx
+-- gmem layout shared with ReaFlip.jsfx
 local G_REQ, G_TOKEN, G_START, G_LEN, G_PATHLEN, G_PATH = 0, 1, 2, 3, 4, 16
 
 local function fail(text)
@@ -146,7 +145,7 @@ local function main()
   reaper.PreventUIRefresh(-1)
   reaper.Undo_EndBlock(NAME .. ": load selected item", -1)
   if not track then
-    fail("The " .. NAME .. " plugin was not found. Copy SlabSampler.jsfx into REAPER's Effects folder.")
+    fail("The " .. NAME .. " plugin was not found. Copy ReaFlip.jsfx into REAPER's Effects folder.")
   end
 end
 

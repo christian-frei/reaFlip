@@ -1,7 +1,6 @@
-desc:Slab Sampler
-// Working title (Q13): the name lives here, in NAME in SlabSampler_Load.lua
-// and in the README. Behaviour: doc/ears.md, build notes: AGENTS.md.
-options:gmem=SlabSampler
+desc:ReaFlip
+// The name lives here, in NAME in ReaFlip_Load.lua and in the README. Behaviour: doc/ears.md, build notes: AGENTS.md.
+options:gmem=ReaFlip
 options:maxmem=2097152
 
 // Hidden: the load action writes a random token here so that only this
@@ -17,7 +16,7 @@ out_pin:Right
 // never reset a loaded sample
 ext_noinit = 1;
 
-// gmem layout shared with SlabSampler_Load.lua
+// gmem layout shared with ReaFlip_Load.lua
 G_REQ = 0; G_TOKEN = 1; G_START = 2; G_LEN = 3; G_PATHLEN = 4; G_PATH = 16;
 
 // memory regions
@@ -296,12 +295,12 @@ state == S_READY ? (
   // R5.3, R5.5
   rgb(C_WARN); text_at(ov_x + 16, ov_y + 20, "The source file is missing:");
   rgb(C_TEXT); text_at(ov_x + 16, ov_y + 40, #path);
-  rgb(C_DIM); text_at(ov_x + 16, ov_y + 72, "Select an item and run \"SlabSampler_Load.lua\" to use another file. Cues are kept.");
+  rgb(C_DIM); text_at(ov_x + 16, ov_y + 72, "Select an item and run \"ReaFlip_Load.lua\" to use another file. Cues are kept.");
 ) : (
   // R3.3
   rgb(C_DIM);
   text_at(ov_x + 16, ov_y + 30, "Select an audio item (WAV or AIFF) in REAPER and run the action");
-  text_at(ov_x + 16, ov_y + 50, "\"SlabSampler_Load.lua\" to load it here.");
+  text_at(ov_x + 16, ov_y + 50, "\"ReaFlip_Load.lua\" to load it here.");
 );
 
 has_err ? (

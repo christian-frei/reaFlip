@@ -1,14 +1,14 @@
 ---
 feature: slab-sampler
-title: Slab Sampler (working title) — pad slicer for REAPER, played from an AlphaTheta SLAB
+title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-10-21
-revision: 3
+date: 2026-10-22
+revision: 4
 status: ready
 ---
 
-# Slab Sampler (working title)
+# ReaFlip
 > Let a producer chop one audio file into 16 cues inside REAPER, play and shape them from an AlphaTheta SLAB the way Serato Sample does, and record the result into an MPC2500.
 
 ## Context
@@ -25,8 +25,8 @@ MPC2500's inputs.
 With Serato Sample, SLAB uses a dedicated "Take Control" link; here SLAB is used in its plain
 general MIDI mode, so every SLAB function below works only once its control has been learned.
 
-"Slab Sampler" is a working title. The final name is still open and the instrument is meant to
-be published for the REAPER community.
+The instrument is called ReaFlip. It is meant to be published for the REAPER community and,
+in the long run, offered to Cockos for inclusion in REAPER.
 
 ## Operations
 - `load-source` — load the source file of the media item selected in REAPER
@@ -315,7 +315,7 @@ be published for the REAPER community.
 
 ## Terms
 - Source — the one audio file loaded into an instance; a stem or loop chosen after STEMwerk separation.
-- Instance — one Slab Sampler on one REAPER track; each instance has its own source and cues.
+- Instance — one ReaFlip on one REAPER track; each instance has its own source and cues.
 - Cue — a start point in the source, with an optional end point and its own parameters, held on one pad.
 - Pad — one of 16 slots, 1 to 16, each triggered by one SLAB pad or a mouse click.
 - Selected cue — the cue last triggered or clicked; the target of dial, arrows, encoders and parameter edits.
@@ -365,9 +365,9 @@ be published for the REAPER community.
 
 ## Open questions
 - Q1 — What does SLAB send in general MIDI mode for each control in R20 and R21 (note or CC numbers, dial and encoder encoding, whether Shift, Delete and the arrows send anything)? The operating instructions refer to a separate MIDI message list at alphatheta.com/support, not found yet. Until then the learn step (R20) discovers it. _(Christian to supply the list, or confirm by learning on the unit)_
-- Q13 — Final public name for the instrument. _(Christian to decide)_
 
 ## Revisions
 - r1 — initial version
 - r2 — working title; source is the item's section, WAV/AIFF only, 18 s at 44.1 kHz stereo scaled by format (R1.7–R1.9 changed, R1.12–R1.15 added, R1.10 track name); swap resets the beatgrid, cancelled analysis keeps the source without grid (R4.6, R4.7); BPM range 20–220 (R8.12 changed, R8.13 added); default end = next cue's start, may pass it (R10.14 changed, R10.15–R10.16 added); Quantize off by default (R10.17); step = 1/100 of the visible span (Terms); Velocity on, 127 = set level (R17.11 changed, R17.18); per-cue loop modes and crossfade (R15.16–R15.18, R17.19–R17.24, R21.25, R21.26, R21.16 changed); Shift + Select All toggles Quantize (R21.27); mono plays on both sides (R15.15); Note Repeat removed (R21.19–R21.23 retired); C3, C5 changed, C7 added; Q2–Q6, Q8, Q11 resolved, Q1, Q7, Q9 narrowed, Q12, Q13 added.
 - r3 — minimum cue length = one step at current zoom (Terms); defaults Slicer 1 beat, Find samples 16 (R13.8, R14.9); loop crossfade up to cue length (R17.25, R17.27); loop direction follows the playing direction, reverse flips it (R17.20–R17.22 changed, R17.26 added); export dropped; Q7, Q9, Q10, Q12 resolved; status ready.
+- r4 — name decided: ReaFlip (title, Context, Terms: Instance); Q13 resolved.

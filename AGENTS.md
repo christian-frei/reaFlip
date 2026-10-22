@@ -1,4 +1,4 @@
-# AGENTS.md — Slab Sampler (working title)
+# AGENTS.md — ReaFlip
 
 A JSFX instrument for REAPER modelled on the Serato Sample workflow: one
 loaded sample section, 16 cues on 16 pads, waveform view, played and edited
@@ -29,11 +29,22 @@ matching revision of `doc/ears.md` (`/ears-spec revise`, ids stay stable).
   community: keep code readable, the README self-contained, and nothing
   user- or machine-specific in the repo.
 
-## Working title
+## Name
 
-"Slab Sampler" is a placeholder (Q13). Keep the name in exactly one place per
-file (JSFX `desc:`, one constant in Lua, README title) so renaming is a
-search-and-replace. File names may change when the name is decided.
+**ReaFlip** ("flipping" a sample = chopping and rearranging it). Decided
+2026-10-22 (Q13 closed). Chosen to fit REAPER's own naming next to
+ReaSamplOmatic5000 and to stay clear of Serato/AlphaTheta trademarks —
+AlphaTheta has a pending trademark application for "SLAB", so the name and
+UI never use "Slab". SLAB is presented as one supported controller, not as
+part of the product. A web search (2026-10-22) found no existing "ReaFlip"
+plugin or script; that is not a trademark clearance.
+
+Long-term goal: offer ReaFlip to Cockos for inclusion in REAPER's stock
+JSFX. That favours a licence Cockos can ship (MIT or LGPL), clean
+self-contained code, and nothing tied to one controller.
+
+Keep the name in one place per file (JSFX `desc:`, `NAME` in Lua, README
+title).
 
 ## Repository layout
 
@@ -43,16 +54,16 @@ search-and-replace. File names may change when the name is decided.
 ├── .gitignore                   # keeps test audio, REAPER projects/peaks, personal scripts out
 ├── README.md                    # user-facing install + usage
 ├── doc/ears.md                  # EARS requirements (source of truth for behaviour)
-├── SlabSampler.jsfx             # the instrument: DSP, MIDI, UI, state
-├── SlabSampler_Load.lua         # action: send the selected item's section to the JSFX
+├── ReaFlip.jsfx             # the instrument: DSP, MIDI, UI, state
+├── ReaFlip_Load.lua         # action: send the selected item's section to the JSFX
 └── probe/                       # temporary: file-loading test, delete once "Verify first" is answered
 ```
 
-Keep it flat. Install = copy or symlink `SlabSampler.jsfx` into REAPER's
-`Effects/` and `SlabSampler_Load.lua` into `Scripts/`; the README explains
+Keep it flat. Install = copy or symlink `ReaFlip.jsfx` into REAPER's
+`Effects/` and `ReaFlip_Load.lua` into `Scripts/`; the README explains
 this. Split the JSFX with `import` only if one file becomes hard to read.
 
-## Lua helper — `SlabSampler_Load.lua` (R1, R2)
+## Lua helper — `ReaFlip_Load.lua` (R1, R2)
 
 1. Exactly one selected media item with an audio take, else one
    `ShowMessageBox` naming the problem (R1.4–R1.6).
@@ -76,10 +87,10 @@ this. Split the JSFX with `import` only if one file becomes hard to read.
 
 ## Loading in the JSFX
 
-- **Handover:** shared memory. Lua `reaper.gmem_attach("SlabSampler")` and
+- **Handover:** shared memory. Lua `reaper.gmem_attach("ReaFlip")` and
   writes: path length, path as character codes, section start and length in
   seconds, then increments a request counter last. The JSFX
-  (`options:gmem=SlabSampler`) sees the counter change in `@block`, rebuilds
+  (`options:gmem=ReaFlip`) sees the counter change in `@block`, rebuilds
   the path with `str_setchar`, and loads.
 - **Reading:** `file_open(path)`, `file_riff` for rate/channels,
   `file_mem` into the sample buffer from the section start, spread over
@@ -121,7 +132,7 @@ buffer plus waveform peaks and state as named regions at the top of
 played on both outputs (R15.15). Play at the file's own rate relative to the
 project rate (resample on playback, linear interpolation is fine for v1).
 
-## The JSFX — `SlabSampler.jsfx`
+## The JSFX — `ReaFlip.jsfx`
 
 - `@init` — constants, memory regions, defaults. Set `ext_noinit = 1`:
   by default JSFX re-runs `@init` on every playback start (seen in the
@@ -230,7 +241,7 @@ is done.
 ## Installation & distribution — LATER (not before v0.1 works)
 
 > **Flagged for later.** Do none of this until the instrument works in
-> REAPER and the final name (Q13) is decided. Kept here so it isn't lost.
+> REAPER. Kept here so it isn't lost.
 
 Requirements for users: stock REAPER 7.x. **No SWS, no ReaPack, no other
 extensions** — JSFX and Lua ReaScript are built into REAPER, and every API
@@ -239,7 +250,7 @@ the project uses (gmem, `PCM_Source_GetSectionInfo`, `file_*`) is native.
 Manual install (what the README must explain):
 1. Download the release zip.
 2. REAPER → *Options → Show REAPER resource path*.
-3. Copy `SlabSampler.jsfx` into `Effects/`, `SlabSampler_Load.lua` into
+3. Copy `ReaFlip.jsfx` into `Effects/`, `ReaFlip_Load.lua` into
    `Scripts/`.
 4. *Actions → New action → Load ReaScript…* → pick the Lua file; optionally
    bind it to a key or toolbar button.
@@ -247,7 +258,7 @@ Manual install (what the README must explain):
    input in REAPER preferences, run Learn.
 
 Publishing (GitHub or GitLab, host to be decided):
-- Public repo with a licence file (MIT or GPL — user decides).
+- Public repo with a licence file (MIT or LGPL, so Cockos could ship it — user decides).
 - Tagged releases (`v0.1.0`, …) with a zip of exactly the two files plus
   README and licence; the download link points at a release, not at `main`.
 - README: what it is, requirements, install, SLAB setup, Learn walkthrough,
@@ -264,6 +275,6 @@ project must never depend on ReaPack.
 ## Open questions
 
 Behavioural questions live in `doc/ears.md` (`## Open questions`: Q1 SLAB
-MIDI message list, Q13 final name). Technical unknowns are listed under
+MIDI message list). Technical unknowns are listed under
 "Verify first" above — resolve them in REAPER, and raise with the user
 anything whose answer would change behaviour.
