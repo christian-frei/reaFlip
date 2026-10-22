@@ -229,7 +229,7 @@ groups it covers, e.g. `Slice 1: load section, waveform, persistence (R1–R5, R
 | Slice | Scope | Requirement groups |
 |---|---|---|
 | 1 Load | Lua helper with all checks, track creation, live-ready; JSFX loading with progress, overview waveform, persistence and reload, missing file | R1, R3, R4.3, R5, R7.1, R22 |
-| 2 Play | 16 pads by mouse and MIDI notes 36–51, Hold/Trigger, Mono/Poly, click-free ramps, velocity | R15, R16, R17.11–17.12, R17.18 |
+| 2 Play | 16 pads by mouse and MIDI notes 36–51, Hold/Trigger, Mono/Poly, click-free ramps, velocity; **temporary** 16 even cues on a fresh load (`temp_even_cues`, breaks R1.3 — remove in slice 3) | R15, R16, R17.11–17.12, R17.18 |
 | 3 Chop | lazy chop, cue handles, main waveform with zoom/freeze, scrub, delete, Slicer, cues kept and clamped on swap | R2, R6, R7, R9, R10, R11, R13 |
 | 4 SLAB | Learn, dial start / Shift+dial end, arrows, app buttons, encoders, touch strip | R20, R21 |
 | 5 Rest | cue parameters, loops, beatgrid + analysis, Find samples, selection, favourites, undo, move/copy/rename | R4, R8, R12, R14, R17, R18, R19 |
@@ -254,8 +254,10 @@ Manual install (what the README must explain):
    `Scripts/`.
 4. *Actions → New action → Load ReaScript…* → pick the Lua file; optionally
    bind it to a key or toolbar button.
-5. Put SLAB into General MIDI mode (hold ENCODER MODE), enable it as a MIDI
-   input in REAPER preferences, run Learn.
+5. Put SLAB into General MIDI mode (hold ENCODER MODE). In *Preferences →
+   Audio → MIDI Inputs*, right-click SLAB → **Enable input** ("control
+   messages only" is not enough — seen in testing: the device is listed but
+   nothing reaches the track). Then run Learn.
 
 Publishing (GitHub or GitLab, host to be decided):
 - Public repo with a licence file (MIT or LGPL, so Cockos could ship it — user decides).

@@ -1,11 +1,15 @@
 desc:ReaFlip
-// The name lives here, in NAME in ReaFlip_Load.lua and in the README. Behaviour: doc/ears.md, build notes: AGENTS.md.
+// The name lives here, in NAME in ReaFlip_Load.lua and in the README.
+// Behaviour: doc/ears.md, build notes: AGENTS.md.
 options:gmem=ReaFlip
 options:maxmem=2097152
 
 // Hidden: the load action writes a random token here so that only this
 // instance answers its gmem request (gmem is shared by all instances).
 slider1:0<0,1000000,1>-load token
+slider2:0<0,1,1{Hold,Trigger}>Cue play mode
+slider3:0<0,1,1{Mono,Poly}>Voice mode
+slider4:1<0,1,1{Off,On}>Velocity
 
 in_pin:none
 out_pin:Left
@@ -25,6 +29,18 @@ BUF = 0;
 SCRATCH = 1600000;                // discard area while reading up to the section start
 CHUNK = 65536;                    // values per block; verified dropout-free in the probe
 PEAKS = 1700000; NPEAKS = 2048;   // overview waveform, computed once per load
+EV = 1710000; EV_MAX = 1000;      // this block's pad events: offset, pad, velocity (0 = release)
+NPADS = 16;
+// cues, one entry per pad; positions in seconds of the loaded section
+CU_SET = 1720000; CU_START = CU_SET + 16; CU_END = CU_SET + 32;   // CU_END < 0 = no end set
+CU_LEVEL = CU_SET + 48; CU_ATT = CU_SET + 64; CU_REL = CU_SET + 80; // dB, seconds, seconds
+// voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice
+NV = 32;
+V_ST = 1730000; V_POS = V_ST + 32; V_END = V_ST + 64; V_ENV = V_ST + 96;
+V_GAIN = V_ST + 128; V_ATT = V_ST + 160; V_REL = V_ST + 192; V_HELD = V_ST + 224;
+V_RELSET = V_ST + 256;            // cue release in seconds, used by Trigger mode (R15.9)
+VS_OFF = 0; VS_ATT = 1; VS_SUS = 2; VS_REL = 3; VS_PARK = 4;
+RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 
 // Source states. EMPTY is 0 so a new instance starts empty without @init
 // assigning state, which would wipe a loaded sample on a samplerate change.
@@ -33,7 +49,12 @@ S_EMPTY = 0; S_LOADING = 1; S_PEAKS = 2; S_READY = 3; S_MISSING = 4;
 // one dark theme, colours defined once
 C_BG = 0x18181b; C_PANEL = 0x232327; C_FRAME = 0x3a3a40; C_TEXT = 0xe8e8ea;
 C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
-C_BTN = 0x34343a; C_BTN_HOT = 0x46464e;
+C_BTN = 0x34343a; C_BTN_HOT = 0x46464e; C_BTN_ON = 0x5a5a66; C_PAD_EMPTY = 0x2c2c31;
+PALETTE = 1729000;                // one colour per pad (R7.3)
+PALETTE[0] = 0xff5a5a; PALETTE[1] = 0xff8c42; PALETTE[2] = 0xffc23d; PALETTE[3] = 0xd4e157;
+PALETTE[4] = 0x7ed957; PALETTE[5] = 0x3ddc97; PALETTE[6] = 0x2ec4b6; PALETTE[7] = 0x3fb6ff;
+PALETTE[8] = 0x5a8dff; PALETTE[9] = 0x8c6bff; PALETTE[10] = 0xbf5af2; PALETTE[11] = 0xff5ac8;
+PALETTE[12] = 0xff7a8a; PALETTE[13] = 0xc9a26b; PALETTE[14] = 0x9aa5b1; PALETTE[15] = 0xe6e6e6;
 
 function close_file()
 (
@@ -41,10 +62,30 @@ function close_file()
   h = -1;
 );
 
+function all_voices_off()
+(
+  memset(V_ST, VS_OFF, NV);
+  memset(V_ENV, 0, NV);
+);
+
 function reset_cues()
 (
-  // cues arrive in slice 3; a fresh load starts without any (R1.3)
-  cue_count = 0;
+  // a fresh load starts without any cues (R1.3)
+  all_voices_off();
+  memset(CU_SET, 0, NPADS);
+  memset(CU_END, -1, NPADS);
+  memset(CU_LEVEL, 0, NPADS);
+  memset(CU_ATT, 0, NPADS);
+  memset(CU_REL, 0, NPADS);
+  selected = -1;
+);
+
+// TEMP (slice 2 only): 16 even cues so the pads can be tested before cue
+// creation exists. Slice 3 removes this; R1.3 wants a fresh load empty.
+function temp_even_cues() local(i)
+(
+  i = 0;
+  loop(NPADS, CU_SET[i] = 1; CU_START[i] = i * sec_len / NPADS; i += 1);
 );
 
 function show_error(text)
@@ -67,12 +108,13 @@ function eject()
 // load leaves the current source playable. On project reopen a file that
 // cannot be opened is "missing": keep path, section and cues (R5.3, R5.4).
 function request_load(reopen)
-  local(vh, rnch, rfsr, ravail, rskip, rwant)
+  local(vh, rnch, rfsr, ravail, rskip, rwant, fresh)
 (
   vh = file_open(#req_path);
   vh < 0 ? (
     reopen ? (
       close_file();
+      all_voices_off();
       strcpy(#path, #req_path);
       sec_start = req_start; sec_len = req_len;
       has_source = 1;
@@ -102,15 +144,19 @@ function request_load(reopen)
         req_len, BUDGET / (rfsr * rnch)));                                          // R1.8
     ) : (
       close_file();
+      all_voices_off();
       h = vh;
-      // a load into an instance that has a source is a swap and keeps cues (R2.1)
-      !has_source ? reset_cues();
+      // a load into an instance that has a source is a swap and keeps cues
+      // (R2.1); so is a reopen, whose cues @serialize has just restored (R5.2)
+      fresh = !has_source && !reopen;
+      fresh ? reset_cues();
       has_source = 1;
       has_err = 0;
       strcpy(#path, #req_path);
       nch = rnch; fsr = rfsr;
       sec_start = req_start;
       sec_len = rwant / rnch / rfsr;
+      fresh ? temp_even_cues();
       skip_total = rskip; skipped = 0;
       want = rwant; got = 0;
       state = S_LOADING;
@@ -171,6 +217,80 @@ function progress()
   : 1;
 );
 
+// ---- cue playback ----
+
+// A cue without an end plays to the next cue's start, or to the section
+// end when no cue follows (R10.14).
+function cue_end(p) local(e, i)
+(
+  CU_END[p] >= 0 ? CU_END[p] : (
+    e = sec_len;
+    i = 0;
+    loop(NPADS,
+      CU_SET[i] && CU_START[i] > CU_START[p] && CU_START[i] < e ? e = CU_START[i];
+      i += 1;
+    );
+    e;
+  );
+);
+
+// Hand a sounding voice over to a tail slot that fades it out, so a
+// retrigger or Mono steal never clicks (R15.11, R15.12, R16.2).
+function cut(v) local(t)
+(
+  V_ST[v] != VS_OFF && V_ST[v] != VS_PARK && V_ENV[v] > 0 ? (
+    t = NPADS + tail_next;
+    tail_next = (tail_next + 1) % NPADS;
+    V_POS[t] = V_POS[v]; V_END[t] = V_END[v]; V_ENV[t] = V_ENV[v];
+    V_GAIN[t] = V_GAIN[v]; V_HELD[t] = 0;
+    V_REL[t] = V_ENV[v] / ramp_n;
+    V_ST[t] = VS_REL;
+  );
+  V_ST[v] = VS_OFF;
+  V_ENV[v] = 0;
+);
+
+function pad_press(p, vel) local(i)
+(
+  state == S_READY && CU_SET[p] ? (                       // R15.14: silent while missing/loading
+    slider3 == 0 ? (                                      // R16.2: Mono stops every other cue
+      i = 0;
+      loop(NPADS, i != p ? cut(i); i += 1);
+    );
+    cut(p);                                               // R15.11: restart from the start
+    V_POS[p] = CU_START[p] * fsr;
+    V_END[p] = cue_end(p) * fsr;
+    V_ENV[p] = 0;
+    V_ATT[p] = 1 / max(CU_ATT[p] * srate, ramp_n);
+    V_RELSET[p] = CU_REL[p];
+    V_REL[p] = 1 / max(CU_REL[p] * srate, ramp_n);
+    // R17.11, R17.12: 127 plays at the set level, lower is proportionally quieter
+    V_GAIN[p] = 10 ^ (CU_LEVEL[p] / 20) * (slider4 ? vel / 127 : 1);
+    V_HELD[p] = 1;
+    V_ST[p] = VS_ATT;
+    selected = p;                                         // R15.3
+  );
+);
+
+function pad_release(p)
+(
+  V_HELD[p] = 0;
+  slider2 == 0 ? (                                        // Hold mode only (R15.5, R15.8)
+    V_ST[p] == VS_ATT || V_ST[p] == VS_SUS ? (
+      V_REL[p] = V_ENV[p] / max(CU_REL[p] * srate, ramp_n);
+      V_ST[p] = VS_REL;
+    ) : V_ST[p] == VS_PARK ? V_ST[p] = VS_OFF;
+  );
+);
+
+function add_event(offset, p, vel)
+(
+  ev_n < EV_MAX ? (
+    EV[ev_n * 3] = offset; EV[ev_n * 3 + 1] = p; EV[ev_n * 3 + 2] = vel;
+    ev_n += 1;
+  );
+);
+
 @block
 gmem[G_REQ] != last_req ? (
   last_req = gmem[G_REQ];
@@ -190,20 +310,107 @@ reload_pending ? (
 );
 state == S_LOADING || state == S_PEAKS ? load_step();
 
+ramp_n = max(1, floor(RAMP_S * srate));
+step = fsr / srate;               // play at the file's own rate
+
+// Pad events are queued with their sample offset and fired in @sample, so
+// finger drumming keeps its timing inside the block. Mouse clicks go first.
+ev_n = 0; ev_i = 0; smp = 0;
+gfx_press ? ( add_event(0, gfx_press - 1, 127); gfx_press = 0; );
+gfx_release ? ( add_event(0, gfx_release - 1, 0); gfx_release = 0; );
+while (midirecv(offset, msg1, msg2, msg3) ? (
+  // shown in the window: tells at a glance whether and what a controller sends
+  mon_1 = msg1; mon_2 = msg2; mon_3 = msg3; mon_count += 1;
+  status = msg1 & 0xF0;
+  pad = msg2 - 36;                                        // notes 36..51 = pads 1..16 (R20.1)
+  pad >= 0 && pad < NPADS && (status == 0x90 || status == 0x80) ? (
+    add_event(offset, pad, status == 0x90 ? msg3 : 0);    // note-on with velocity 0 is a release
+  ) : (
+    midisend(offset, msg1, msg2, msg3);                   // R20.12: pass on what we don't use
+  );
+  1;
+) : 0);
+
 @sample
-// silent until pads arrive in slice 2
-spl0 = spl1 = 0;
+while (ev_i < ev_n && EV[ev_i * 3] <= smp ? (
+  EV[ev_i * 3 + 2] > 0 ? pad_press(EV[ev_i * 3 + 1], EV[ev_i * 3 + 2]) : pad_release(EV[ev_i * 3 + 1]);
+  ev_i += 1;
+  1;
+) : 0);
+smp += 1;
+
+out_l = out_r = 0;
+state == S_READY ? (
+  v = 0;
+  loop(NV,
+    st = V_ST[v];
+    st != VS_OFF && st != VS_PARK ? (
+      pos = V_POS[v];
+      idx = floor(pos); fr = pos - idx;
+      nxt = min(idx + 1, frames - 1);
+      a = BUF[idx * nch]; l = a + (BUF[nxt * nch] - a) * fr;
+      nch > 1 ? ( a = BUF[idx * nch + 1]; r = a + (BUF[nxt * nch + 1] - a) * fr; ) : r = l;  // R15.15
+
+      st == VS_ATT ? (
+        V_ENV[v] += V_ATT[v];
+        V_ENV[v] >= 1 ? (
+          V_ENV[v] = 1;
+          V_ST[v] = VS_SUS;
+          // R15.9: in Trigger mode a set release starts once the attack is done
+          slider2 == 1 && V_RELSET[v] > 0 ? (
+            V_REL[v] = 1 / max(V_RELSET[v] * srate, ramp_n);
+            V_ST[v] = VS_REL;
+          );
+        );
+      ) : st == VS_REL ? (
+        V_ENV[v] -= V_REL[v];
+      );
+
+      // reach silence exactly at the cue end instead of cutting; a slower
+      // release already running is sped up just enough
+      rem = (V_END[v] - pos) / step;
+      rem <= ramp_n ? (
+        need = V_ENV[v] / max(rem, 1);
+        V_ST[v] != VS_REL || V_REL[v] < need ? (
+          V_REL[v] = need;
+          V_ST[v] = VS_REL;
+        );
+      );
+
+      g = max(V_ENV[v], 0) * V_GAIN[v];
+      out_l += l * g; out_r += r * g;
+      V_POS[v] = pos + step;
+
+      V_ENV[v] <= 0 || V_POS[v] >= V_END[v] ? (
+        V_ENV[v] = 0;
+        // R15.7: a held Hold-mode cue that reached its end waits silently
+        V_ST[v] = v < NPADS && slider2 == 0 && V_HELD[v] && V_POS[v] >= V_END[v] - ramp_n * step ? VS_PARK : VS_OFF;
+      );
+    );
+    v += 1;
+  );
+);
+spl0 = out_l;
+spl1 = out_r;
 
 @serialize
 file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver == 1 ? (
+  ser_ver >= 1 && ser_ver <= 2 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
     file_var(0, ser_has);
+    ser_ver >= 2 ? (
+      i = 0;
+      loop(NPADS,
+        file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
+        file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
+        i += 1;
+      );
+    );
     ser_has ? (
       // undo restores run this too: only reload when the source really changed
       !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
@@ -215,19 +422,27 @@ file_avail(0) >= 0 ? (
     ) : has_source ? eject();
   );
 ) : (
-  ser_ver = 1;
+  ser_ver = 2;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
   file_var(0, sec_start);
   file_var(0, sec_len);
   file_var(0, has_source);
+  i = 0;
+  loop(NPADS,
+    file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
+    file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
+    i += 1;
+  );
 );
 
-@gfx 900 360
+@gfx 900 640
 function rgb(c) ( gfx_set(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255); );
 
 function text_at(x, y, s) ( gfx_x = x; gfx_y = y; gfx_drawstr(s); );
+
+function inside(x, y, w, hh) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + hh; );
 
 // file name without folders, for the header (R1.2)
 function basename(src, dst) local(i, c, cut)
@@ -237,16 +452,18 @@ function basename(src, dst) local(i, c, cut)
   strcpy_substr(dst, src, cut);
 );
 
-function button(x, y, w, hh, label) local(hot, clicked)
+function button(x, y, w, hh, label, on) local(hot)
 (
-  hot = mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + hh;
-  rgb(hot ? C_BTN_HOT : C_BTN); gfx_rect(x, y, w, hh);
-  rgb(C_TEXT);
+  hot = inside(x, y, w, hh);
+  rgb(on ? C_BTN_ON : hot ? C_BTN_HOT : C_BTN); gfx_rect(x, y, w, hh);
+  rgb(on ? C_TEXT : C_DIM);
   gfx_measurestr(label, tw, th);
   text_at(x + (w - tw) / 2, y + (hh - th) / 2, label);
-  clicked = hot && (mouse_cap & 1) && !(last_cap & 1);
-  clicked;
+  hot && clicked;
 );
+
+clicked = (mouse_cap & 1) && !(last_cap & 1);
+released = !(mouse_cap & 1) && (last_cap & 1);
 
 rgb(C_BG); gfx_rect(0, 0, gfx_w, gfx_h);
 pad = 12;
@@ -264,8 +481,7 @@ has_source ? (
   : state == S_READY ? text_at(pad, 30, sprintf(#t, "%d:%06.3f  |  %g kHz  |  %s",
       floor(sec_len / 60), sec_len - floor(sec_len / 60) * 60, fsr / 1000, nch == 1 ? "mono" : "stereo"))
   : text_at(pad, 30, "loading ...");
-  gfx_setfont(2, "Arial", 13);
-  button(gfx_w - pad - 70, 13, 70, 26, "Eject") ? eject();                  // R3.1
+  button(gfx_w - pad - 70, 13, 70, 26, "Eject", 0) ? eject();                // R3.1
 ) : (
   rgb(C_DIM); text_at(pad, 17, "No source loaded");
 );
@@ -284,6 +500,25 @@ state == S_READY ? (
     loop(b - a, m = max(m, PEAKS[j]); j += 1);
     gfx_line(ov_x + x, mid - m * (ov_h / 2 - 2), ov_x + x, mid + m * (ov_h / 2 - 2));
     x += 1;
+  );
+  // cue starts in their pad colours, and where each sounding voice is
+  j = 0;
+  loop(NPADS,
+    CU_SET[j] ? (
+      cx = ov_x + CU_START[j] / sec_len * ov_w;
+      rgb(PALETTE[j]); gfx_line(cx, ov_y, cx, ov_y + ov_h - 1);
+      gfx_x = cx + 3; gfx_y = ov_y + 2; gfx_drawnumber(j + 1, 0);
+    );
+    j += 1;
+  );
+  gfx_set(1, 1, 1);
+  j = 0;
+  loop(NV,
+    V_ST[j] != VS_OFF && V_ST[j] != VS_PARK ? (
+      cx = ov_x + V_POS[j] / fsr / sec_len * ov_w;
+      gfx_line(cx, ov_y, cx, ov_y + ov_h - 1);
+    );
+    j += 1;
   );
 ) : state == S_LOADING || state == S_PEAKS ? (
   // R4.3
@@ -304,8 +539,55 @@ state == S_READY ? (
 );
 
 has_err ? (
-  rgb(C_ERR); gfx_setfont(2, "Arial", 13);
-  text_at(pad, ov_y + ov_h + 10, #err);
+  rgb(C_ERR);
+  text_at(pad, ov_y + ov_h + 6, #err);
 );
+
+// MIDI monitor
+rgb(C_DIM);
+mon_count ? (
+  ms = mon_1 & 0xF0;
+  strcpy(#mtype, ms == 0x90 ? (mon_3 > 0 ? "note on" : "note off") : ms == 0x80 ? "note off"
+    : ms == 0xB0 ? "CC" : ms == 0xA0 ? "aftertouch" : ms == 0xD0 ? "channel pressure"
+    : ms == 0xE0 ? "pitch bend" : ms == 0xC0 ? "program change" : "other");
+  text_at(gfx_w - pad - 330, ov_y + ov_h + 6,
+    sprintf(#t, "Last MIDI: %s  ch %d  %d / %d   (#%d)", #mtype, (mon_1 & 15) + 1, mon_2, mon_3, mon_count));
+) : text_at(gfx_w - pad - 330, ov_y + ov_h + 6, "Last MIDI: nothing received yet");
+
+// mode bar: changes go through slider_automate so REAPER records them
+bar_y = ov_y + ov_h + 28; bw = 74; bh = 26;
+button(pad, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); );
+button(pad + bw, bar_y, bw, bh, "Trigger", slider2 == 1) ? ( slider2 = 1; slider_automate(slider2); );
+button(pad + 2 * bw + 12, bar_y, bw, bh, "Mono", slider3 == 0) ? ( slider3 = 0; slider_automate(slider3); );
+button(pad + 3 * bw + 12, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate(slider3); );
+button(pad + 4 * bw + 24, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); );
+
+// 4x4 pads, pad 1 bottom-left like the hardware; lit while sounding (R15.2),
+// outlined when selected (R15.3)
+pads_y = bar_y + bh + 14;
+gap = 8;
+ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
+ps = max(ps, 20);
+gfx_setfont(1, "Arial", 17);
+p = 0;
+loop(NPADS,
+  col = p % 4; row = 3 - floor(p / 4);
+  px = pad + col * (ps + gap); py = pads_y + row * (ps + gap);
+  sounding = V_ST[p] != VS_OFF && V_ST[p] != VS_PARK;
+  CU_SET[p] ? (
+    rgb(PALETTE[p]);
+    gfx_a = sounding ? 1 : 0.35;
+  ) : (
+    rgb(C_PAD_EMPTY);
+  );
+  gfx_rect(px, py, ps, ps);
+  gfx_a = 1;
+  p == selected ? ( rgb(C_TEXT); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); );
+  rgb(sounding ? C_BG : C_TEXT);
+  gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0);
+  clicked && inside(px, py, ps, ps) ? ( gfx_press = p + 1; mouse_pad = p + 1; );
+  p += 1;
+);
+released && mouse_pad ? ( gfx_release = mouse_pad; mouse_pad = 0; );
 
 last_cap = mouse_cap;
