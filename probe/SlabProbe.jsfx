@@ -1,0 +1,173 @@
+desc:Slab Probe (file loading test)
+// Throwaway test for the "Verify first" list in AGENTS.md:
+// absolute-path file_open, file_riff on WAV/AIFF, gmem path handover,
+// and reading from a section offset. Not part of the instrument.
+options:gmem=SlabProbe
+options:maxmem=4194304
+
+slider1:0<0,1,1{Off,On}>Audition loaded section (loop)
+
+in_pin:Left
+in_pin:Right
+out_pin:Left
+out_pin:Right
+
+@init
+// @init re-runs on every playback start by default, which would reset the
+// load state while the sample stays in memory
+ext_noinit = 1;
+
+// gmem layout, written by SlabProbe_Send.lua (counter last, so a half
+// written request is never picked up)
+G_REQ = 0;
+G_START = 1;
+G_LEN = 2;
+G_PATHLEN = 3;
+G_PATH = 16;
+
+// memory layout
+BUF = 0;
+BUF_MAX = 1587600;       // 18 s x 44100 x 2 values, the real budget (C5)
+SCRATCH = 2000000;       // discard area while skipping to the section start
+CHUNK = 65536;           // values per @block step, keeps the audio thread responsive
+
+ST_IDLE = 0; ST_SKIP = 1; ST_READ = 2; ST_DONE = 3; ST_ERR = -1;
+
+// don't pick up a request that was already waiting when the plugin loaded
+// (or when @init re-runs on a samplerate change)
+last_req = gmem[G_REQ];
+state = ST_IDLE;
+h = -1;
+pos = 0;
+strcpy(#msg, "Waiting for SlabProbe_Send.lua ...");
+
+function finish(err_text)
+(
+  h >= 0 ? file_close(h);
+  h = -1;
+  t_end = time_precise();
+  err_text != 0 ? (
+    state = ST_ERR;
+    strcpy(#msg, err_text);
+  ) : (
+    state = ST_DONE;
+    peak = 0;
+    i = 0;
+    loop(got_total, peak = max(peak, abs(BUF[i])); i += 1);
+    strcpy(#msg, "Loaded.");
+  );
+);
+
+function start_load()
+  local(i, n)
+(
+  h >= 0 ? file_close(h);
+  h = -1;
+  // rebuild the path one byte at a time; %c keeps UTF-8 bytes intact
+  strcpy(#path, "");
+  n = gmem[G_PATHLEN];
+  i = 0;
+  loop(n, sprintf(#ch, "%c", gmem[G_PATH + i]); strcat(#path, #ch); i += 1);
+  sec_start = gmem[G_START];
+  sec_len = gmem[G_LEN];
+
+  t_start = time_precise();
+  got_total = 0; skipped = 0; pos = 0; nch = 0; fsr = 0; avail0 = 0; over_budget = 0;
+  h = file_open(#path);
+  open_result = h;
+  h < 0 ? (
+    finish("file_open failed (path not accepted or file not found)");
+  ) : (
+    file_riff(h, nch, fsr);
+    nch < 1 || fsr < 1 ? (
+      finish("file_riff: not readable as audio (nch/srate = 0)");
+    ) : (
+      avail0 = file_avail(h);
+      skip_total = floor(sec_start * fsr + 0.5) * nch;
+      want = floor(sec_len * fsr + 0.5) * nch;
+      want > BUF_MAX ? (over_budget = 1; want = BUF_MAX);
+      state = skip_total > 0 ? ST_SKIP : ST_READ;
+      strcpy(#msg, "Loading ...");
+    );
+  );
+);
+
+function load_step()
+  local(n, got)
+(
+  state == ST_SKIP ? (
+    // file_* has no seek, so the section start is reached by reading past it
+    n = min(CHUNK, skip_total - skipped);
+    got = file_mem(h, SCRATCH, n);
+    skipped += got;
+    got < n ? (
+      finish("end of file while skipping to section start");
+    ) : (
+      skipped >= skip_total ? (state = ST_READ);
+    );
+  ) : state == ST_READ ? (
+    n = min(CHUNK, want - got_total);
+    got = file_mem(h, BUF + got_total, n);
+    got_total += got;
+    (got_total >= want || got < n) ? finish(0);
+  );
+);
+
+@block
+gmem[G_REQ] != last_req ? (
+  last_req = gmem[G_REQ];
+  start_load();
+);
+state == ST_SKIP || state == ST_READ ? load_step();
+
+@sample
+state == ST_DONE && slider1 && got_total >= nch ? (
+  frames = got_total / nch;
+  idx = floor(pos) * nch;
+  spl0 = BUF[idx];
+  spl1 = nch > 1 ? BUF[idx + 1] : spl0;
+  // step by file rate / project rate so pitch is right without real resampling
+  pos += fsr / srate;
+  pos >= frames ? pos = 0;
+);
+// otherwise the track's own audio passes through untouched
+
+@gfx 640 360
+gfx_clear = 0x202020;
+gfx_setfont(1, "Arial", 15);
+gfx_set(1, 1, 1);
+gfx_x = 10; gfx_y = 10;
+
+function line(s) ( gfx_drawstr(s); gfx_x = 10; gfx_y += 19; );
+
+state == ST_ERR ? gfx_set(1, 0.4, 0.4) : state == ST_DONE ? gfx_set(0.5, 1, 0.5);
+line(#msg);
+gfx_set(1, 1, 1);
+line(sprintf(#t, "request #%d   path bytes: %d", last_req, gmem[G_PATHLEN]));
+line(sprintf(#t, "path: %s", #path));
+line(sprintf(#t, "section start %.6f s   length %.6f s", sec_start, sec_len));
+line(sprintf(#t, "file_open result: %d (>= 0 = opened)", open_result));
+line(sprintf(#t, "file_riff: %d ch, %d Hz   file_avail after riff: %d", nch, fsr, avail0));
+line(sprintf(#t, "skipped %d values, loaded %d values (%d frames)%s",
+  skipped, got_total, nch > 0 ? got_total / nch : 0, over_budget ? "  OVER 18 s BUDGET, truncated" : ""));
+line(sprintf(#t, "time: %.1f ms   peak: %.4f", (t_end - t_start) * 1000, peak));
+nch > 0 ? (
+  line(sprintf(#t, "first frames L: %.6f %.6f %.6f %.6f", BUF[0], BUF[nch], BUF[2*nch], BUF[3*nch]));
+  nch > 1 ? line(sprintf(#t, "first frames R: %.6f %.6f %.6f %.6f", BUF[1], BUF[nch+1], BUF[2*nch+1], BUF[3*nch+1]));
+);
+
+// mini waveform of what was loaded, to eyeball the section boundaries
+state == ST_DONE && got_total > 0 ? (
+  wy = gfx_y + 10; wh = 80; ww = gfx_w - 20;
+  gfx_set(0.3, 0.3, 0.3); gfx_rect(10, wy, ww, wh);
+  gfx_set(0.4, 0.8, 1);
+  gframes = got_total / nch;
+  x = 0;
+  loop(ww,
+    a = floor(x / ww * gframes); b = floor((x + 1) / ww * gframes);
+    m = 0; j = a;
+    loop(max(1, b - a), m = max(m, abs(BUF[j * nch])); j += 1);
+    gfx_line(10 + x, wy + wh/2 - m * wh/2, 10 + x, wy + wh/2 + m * wh/2);
+    x += 1;
+  );
+);

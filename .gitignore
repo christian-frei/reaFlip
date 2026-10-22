@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# REAPER peak files and test projects/audio stay out of the public repo
+*.reapeaks
+*.rpp
+*.rpp-bak
+*.wav
+*.aif
+*.aiff
+
+# personal helper scripts
+resume_claude.sh
