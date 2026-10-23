@@ -4,7 +4,7 @@ title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
 date: 2026-10-23
-revision: 7
+revision: 8
 status: ready
 ---
 
@@ -49,6 +49,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - `undo-redo` — step back and forward through cue edits
 - `learn-controls` — learn which SLAB controls send which MIDI messages
 - `control-from-slab` — operate the instrument from SLAB's dial, arrows, encoders, buttons and touch strip
+- `stretch-time` — follow the project tempo, and change a cue's length or key without the other
 
 ## Requirements
 
@@ -235,7 +236,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R17.5 — When the producer turns a cue's filter right of centre, the system shall apply a high-pass filter whose cutoff rises from 80 Hz towards 17 kHz.
 - R17.6 — While a cue's filter is at centre, the system shall play the cue unfiltered.
 - R17.7 — While a cue is set to reverse, the system shall play it backwards from its end to its start.
-- R17.8 — When the producer sets a cue's key shift, the system shall play that cue higher or lower in semitone steps within −24 to +24, changing its speed and length together with its pitch.
+- R17.8 — When the producer sets a cue's key shift, the system shall play that cue higher or lower in semitone steps within −24 to +24, changing its speed and length together with its pitch unless the cue keeps its tempo (R23.6).
 - R17.9 — When the producer clicks a parameter with the reset modifier held, the system shall return it to its default value.
 - R17.10 — When the producer adjusts a parameter with the fine modifier held, the system shall change it in smaller increments.
 - R17.11 — While Velocity is on, the system shall play a cue triggered at velocity 127 at its set level, and lower velocities proportionally quieter.
@@ -315,6 +316,18 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R22.1 — The system shall never change, move, copy or re-render the source file.
 - R22.2 — The system shall keep all cues, parameters and settings with the REAPER project, not in or beside the source file.
 
+### R23: Stretch time
+- R23.1 — The system shall have Sync off in a new instance.
+- R23.2 — While Sync is on and the source has a beatgrid, the system shall play the source and every cue at the REAPER project tempo without changing their pitch.
+- R23.3 — While Sync is on, when the project tempo changes, the system shall follow the new tempo.
+- R23.4 — If Sync is on and the source has no beatgrid, then the system shall play at the source's own speed and say that a tempo is needed.
+- R23.5 — The system shall offer a stretch per cue from 0.25× to 4× its length, 1× in a new cue.
+- R23.6 — The system shall offer per cue a choice to keep its tempo when its key is shifted, off in a new cue.
+- R23.7 — While a cue's stretch is not 1×, the system shall play it longer or shorter by that factor without changing its pitch.
+- R23.8 — While a cue keeps its tempo, when its key is shifted, the system shall change its pitch without changing its length.
+- R23.9 — While Sync is on, the system shall apply each cue's stretch on top of the tempo change.
+- R23.10 — The system shall keep cue positions, the waveform and the beatgrid in the source's own time, whatever the stretch.
+
 ## Terms
 - Source — the one audio file loaded into an instance; a stem or loop chosen after STEMwerk separation.
 - Instance — one ReaFlip on one REAPER track; each instance has its own source and cues.
@@ -349,8 +362,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 
 ## Out of scope
 - Stem separation and stem mute/solo/level (done by STEMwerk).
-- Pitch 'n Time: key shift that keeps tempo, time stretch that keeps pitch, per-cue time stretch, deck key/BPM changes.
-- Sync of the source tempo to the REAPER project tempo.
+- Stretch quality on a par with commercial engines (Serato's Pitch 'n Time); deck key/BPM changes.
 - Key detection and key display.
 - More than 16 cues and SLAB Octave −/+ bank switching.
 - Autoset modes Set Random, Key Shift Pad and Serato DJ cue import.
@@ -376,3 +388,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r5 — default pad notes 0–15, as SLAB sends them (R20.1 changed); Q1 narrowed to the non-pad controls.
 - r6 — load target with several instances (R1.16 added); Shift combinations learned on their own (R20.15 added).
 - r7 — encoders remapped to level, filter, attack, key shift (R21.2–R21.4 changed); release is set in the window only.
+- r8 — time stretch moved into scope: Sync to the project tempo, per-cue stretch and key shift that keeps tempo (R23 added, R17.8 changed, `stretch-time` added, Out of scope narrowed).

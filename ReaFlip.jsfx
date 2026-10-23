@@ -11,6 +11,7 @@ slider2:0<0,1,1{Hold,Trigger}>Cue play mode
 slider3:0<0,1,1{Mono,Poly}>Voice mode
 slider4:1<0,1,1{Off,On}>Velocity
 slider5:1<0,1,1{Off,On}>Lazy chop
+slider6:0<0,1,1{Off,On}>Quantize
 
 in_pin:none
 out_pin:Left
@@ -47,6 +48,9 @@ CUE_SIZE = 208 + NPADS * NAME_LEN;       // all cue state as one block, so undo 
 SEL = 1721000;                    // selection flags; not part of undo
 // undo (R19): a ring of cue-state snapshots; SEEN is the state last looked at
 SEEN = 1797000; HIST = 1800000; HSLOTS = 128;   // 127 steps back (R19.3)
+// tempo analysis (R4): onset strength per HOP frames, its autocorrelation per lag
+HOP = 256; ONS = 1880000; ONS_MAX = 7000; AC = 1888000; AC_MAX = 2600;
+metro_n = 1000000;                // no metronome click pending
 // voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
 // 32 plays the source itself (play/pause and lazy chop)
 NV = 33; SRC = 32;
@@ -151,6 +155,7 @@ function eject()
   has_source = 0;
   has_err = 0;
   strcpy(#path, "");
+  has_grid = 0; ana_state = 0; ge_on = 0;
   reset_cues();                  // R3.2
 );
 
@@ -169,6 +174,121 @@ function clamp_cues() local(i, last)
     i += 1;
   );
 );
+
+// ---- tempo and beatgrid analysis (R4) ----
+// Runs a slice per block so the audio thread never stalls. Deterministic:
+// the same source always gives the same grid.
+
+function ana_start()
+(
+  has_grid = 0;
+  an_frames = min(floor(frames / HOP), ONS_MAX);
+  an_n = 0; an_le = 0; an_lh = 0; an_xp = 0;
+  ana_state = an_frames >= 16 ? 1 : 0;   // a source this short has no tempo to find
+);
+
+function ana_cancel() ( ana_state = 0; has_grid = 0; );   // R4.4, R4.7
+
+function ana_progress()
+(
+  ana_state == 1 ? 0.4 * an_n / an_frames
+  : ana_state == 2 ? 0.4 + 0.3 * (an_lag - an_l0) / max(1, an_l1 - an_l0)
+  : 0.7 + 0.3 * an_pi / 80;
+);
+
+function ons_at(t) local(i)
+(
+  i = floor(t);
+  i >= 0 && i + 1 < an_frames ? ONS[i] + (ONS[i + 1] - ONS[i]) * (t - i) : 0;
+);
+
+function ana_step() local(k, i, x, e, h, le, lh, s, m, best, v, lag, prior, P, ph, t, sc, n, b)
+(
+  ana_state == 1 ? (
+    // onset strength: rises in log energy of the whole signal and of its
+    // first difference (the highs, so hats and snares count too)
+    loop(min(128, an_frames - an_n),
+      e = 0; h = 0; i = an_n * HOP;
+      loop(HOP,
+        x = nch > 1 ? (BUF[i * 2] + BUF[i * 2 + 1]) * 0.5 : BUF[i];
+        e += x * x; h += sqr(x - an_xp); an_xp = x;
+        i += 1;
+      );
+      le = log(e + 0.000000001); lh = log(h + 0.000000001);
+      ONS[an_n] = an_n ? max(0, le - an_le) + max(0, lh - an_lh) : 0;
+      an_le = le; an_lh = lh;
+      an_n += 1;
+    );
+    an_n >= an_frames ? (
+      m = 0; i = 0; loop(an_frames, m += ONS[i]; i += 1); m /= an_frames;
+      i = 0; loop(an_frames, ONS[i] -= m; i += 1);        // silence then correlates as nothing
+      an_fps = fsr / HOP;
+      an_l0 = max(2, floor(60 * an_fps / 220));           // R8.13 range
+      an_l1 = min(min(ceil(60 * an_fps / 20), an_frames - 4), AC_MAX - 1);
+      an_lag = an_l0;
+      ana_state = an_l1 > an_l0 + 2 ? 2 : 0;
+    );
+  ) : ana_state == 2 ? (
+    // autocorrelation over the beat periods of 20-220 BPM, a few lags per block
+    k = 0;
+    while (k < 16 && an_lag <= an_l1 ? (
+      s = 0; i = 0;
+      loop(an_frames - an_lag, s += ONS[i] * ONS[i + an_lag]; i += 1);
+      AC[an_lag] = s / (an_frames - an_lag);
+      an_lag += 1; k += 1;
+      1;
+    ) : 0);
+    an_lag > an_l1 ? (
+      // weighted towards 120 BPM, so half or double tempo only wins when
+      // clearly stronger
+      best = -1; v = 0; lag = an_l0;
+      loop(an_l1 - an_l0 + 1,
+        prior = exp(-0.5 * sqr(log(60 * an_fps / lag / 120) / log(2) / 0.9));
+        AC[lag] * prior > v ? ( v = AC[lag] * prior; best = lag; );
+        lag += 1;
+      );
+      best < 0 ? ana_state = 0 : ( an_p0 = best; an_pi = 0; an_best = -1000000; ana_state = 3; );
+    );
+  ) : ana_state == 3 ? (
+    // period and phase together: a comb over the whole envelope for
+    // periods within 2 % of the estimate, phases in half-frame steps
+    loop(2,
+      an_pi <= 80 ? (
+        P = an_p0 * (0.98 + an_pi * 0.0005);
+        ph = 0;
+        while (ph < P ? (
+          sc = 0; n = 0; t = ph;
+          while (t < an_frames - 1 ? ( sc += ons_at(t); n += 1; t += P; 1; ) : 0);
+          n > 0 && sc / n > an_best ? ( an_best = sc / n; an_P = P; an_ph = ph; );
+          ph += 0.5;
+          1;
+        ) : 0);
+        an_pi += 1;
+      );
+    );
+    an_pi > 80 ? (
+      // the downbeat: which of the four beats is strongest across the bars
+      best = 0; v = -1000000; b = 0;
+      loop(4,
+        sc = 0; t = an_ph + b * an_P;
+        while (t < an_frames - 1 ? ( sc += ons_at(t); t += 4 * an_P; 1; ) : 0);
+        sc > v ? ( v = sc; best = b; );
+        b += 1;
+      );
+      bpm = max(20, min(220, 60 * an_fps / an_P));
+      gs = (an_ph + best * an_P) * HOP / fsr;             // first downbeat (R4.2)
+      has_grid = 1;
+      ana_state = 0;
+    );
+  );
+);
+
+function beat_len() ( 60 / bpm; );
+
+// grid start becomes the first downbeat at or after 0, grid unchanged
+function norm_gs() local(bar) ( bar = 4 * beat_len(); gs -= floor(gs / bar) * bar; );
+
+function set_bpm(v) ( bpm = max(20, min(220, v)); );   // R8.13
 
 // Validate the requested file fully before touching the buffer, so a failed
 // load leaves the current source playable. On project reopen a file that
@@ -223,6 +343,9 @@ function request_load(reopen)
       sec_start = req_start;
       sec_len = rwant / rnch / rfsr;
       !fresh && !reopen ? clamp_cues();
+      // a new or swapped source is analysed afresh (R4.6); a reopen keeps
+      // the grid @serialize restored
+      !reopen ? ( has_grid = 0; grid_keep = 0; ana_state = 0; );
       ph = 0;
       view_reset = 1;
       skip_total = rskip; skipped = 0;
@@ -275,7 +398,7 @@ function load_step()
       i += 1;
     );
     pk_frame = i;
-    pk_frame >= frames ? ( state = S_READY; hist_reset(); );
+    pk_frame >= frames ? ( state = S_READY; hist_reset(); grid_keep ? grid_keep = 0 : ana_start(); );
   );
 );
 
@@ -303,10 +426,16 @@ function cue_end(p) local(e, i)
   );
 );
 
+// R10.10-R10.12: to the nearest 1/8 beat while Quantize is on and there is a grid
+function snap(t) local(q)
+(
+  slider6 && has_grid ? ( q = 60 / bpm / 8; gs + floor((t - gs) / q + 0.5) * q; ) : t;
+);
+
 function new_cue(p, t)
 (
   // R9.11: default parameters, no end point
-  CU_SET[p] = 1; CU_START[p] = t; CU_END[p] = -1;
+  CU_SET[p] = 1; CU_START[p] = max(0, min(snap(t), sec_len - sec_len / 100)); CU_END[p] = -1;
   CU_LEVEL[p] = 0; CU_ATT[p] = 0; CU_REL[p] = 0;
   CU_FILT[p] = 0; CU_REV[p] = 0; CU_KEY[p] = 0; CU_LOOP[p] = 0; CU_XF[p] = 0;   // R17.19, R17.24
   CU_FAV[p] = 0; CU_COL[p] = p; memset(CU_NAME + p * NAME_LEN, 0, NAME_LEN);
@@ -884,7 +1013,7 @@ function edit_step() ( step_len > 0 ? step_len : sec_len / 100; );
 // implied end (R10.15), ends may pass the next cue (R10.16).
 function set_start(p, t)
 (
-  t = min(t, (CU_END[p] >= 0 ? CU_END[p] : sec_len) - edit_step());
+  t = min(snap(t), (CU_END[p] >= 0 ? CU_END[p] : sec_len) - edit_step());
   CU_START[p] = max(0, t);
   clamp_params(p);
 );
@@ -892,7 +1021,7 @@ function set_start(p, t)
 function set_end(p, t)
 (
   CU_END[p] < 0 ? CU_END[p] = cue_end(p);
-  CU_END[p] = max(min(sec_len, t), CU_START[p] + edit_step());
+  CU_END[p] = max(min(sec_len, snap(t)), CU_START[p] + edit_step());
   clamp_params(p);
 );
 
@@ -904,14 +1033,16 @@ function nudge_time(t, d) local(sz)
 
 function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );   // the dial's cue
 
-function slab_control(k, val) local(d, i, pr, f, q)
+function slab_control(k, val) local(d, i, pr, f, q, ds)
 (
   step_kind(k) == 1 ? (
     d = rel_delta(k, val);
     k == L_DIAL || k == L_SDIAL ? (
       has_target() ? (
-        slab_shift || k == L_SDIAL ? set_end(selected, cue_end(selected) + d * edit_step())   // R10.4
-                                   : set_start(selected, CU_START[selected] + d * edit_step()); // R10.3
+        // with Quantize on, a tick is one 1/8 beat so the snap can't hold it back
+        ds = slider6 && has_grid ? beat_len() / 8 : edit_step();
+        slab_shift || k == L_SDIAL ? set_end(selected, cue_end(selected) + d * ds)   // R10.4
+                                   : set_start(selected, CU_START[selected] + d * ds); // R10.3
       );
     ) : (
       i = k - L_ENC1;
@@ -973,8 +1104,13 @@ function slab_control(k, val) local(d, i, pr, f, q)
       : k == L_REDO ? ( state == S_READY ? redo(); )                         // R21.8
       : k == L_FAV ? toggle_fav()                                            // R21.11
       : k == L_SELALL && !slab_shift ? ( state == S_READY ? select_all(); )  // R21.13
-      : k == L_LEFT || k == L_RIGHT ? (
-        say("Arrows need the beatgrid: comes with slice 5.");
+      : (k == L_SELALL && slab_shift) || k == L_SSELALL ? (
+        slider6 = !slider6; slider_automate(slider6);                        // R21.27
+        say(slider6 ? "Quantize on" : "Quantize off");
+      ) : k == L_LEFT || k == L_RIGHT ? (
+        // R10.5, R10.6: the selected cue's end, one beat
+        !has_grid ? say("The arrows need a beatgrid.")
+        : has_target() ? set_end(selected, cue_end(selected) + (k == L_RIGHT ? 1 : -1) * beat_len());
       ) : later(k);
     );
   );
@@ -1038,6 +1174,9 @@ reload_pending ? (
   request_load(1);
 );
 state == S_LOADING || state == S_PEAKS ? load_step();
+state == S_READY && ana_state ? ana_step();
+ana_cancel_req ? ana_cancel();
+ana_cancel_req = 0;
 
 ramp_n = max(1, floor(RAMP_S * srate));
 step = fsr / srate;               // play at the file's own rate
@@ -1179,6 +1318,17 @@ state == S_READY ? (
     ) : ph = min(V_POS[ph_voice], frames - 1);
   );
 );
+// R8.7: a click on every grid beat while editing the grid with the
+// metronome on; the bar's first beat is higher
+ge_on && metro && has_grid && src_playing ? (
+  mb = floor((V_POS[SRC] / fsr - gs) / beat_len());
+  mb != metro_last ? ( metro_last = mb; metro_n = 0; metro_f = mb - floor(mb / 4) * 4 == 0 ? 1500 : 1000; );
+) : metro_last = -1000000;
+metro_n < 0.03 * srate ? (
+  mc = sin(2 * $pi * metro_f * metro_n / srate) * (1 - metro_n / (0.03 * srate)) * 0.3;
+  out_l += mc; out_r += mc;
+  metro_n += 1;
+);
 spl0 = out_l;
 spl1 = out_r;
 
@@ -1187,7 +1337,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 7 ? (
+  ser_ver >= 1 && ser_ver <= 8 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -1227,6 +1377,11 @@ file_avail(0) >= 0 ? (
       file_var(0, ser_skip);
       loop(NPADS + 25 * (ser_ver == 4 ? 4 : 3), file_var(0, ser_skip));
     );
+    // the grid is kept on reopen; older projects analyse again (R4.1)
+    ser_ver >= 8 ? (
+      file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
+      grid_keep = 1; ana_state = 0;
+    ) : grid_keep = 0;
     ser_has ? (
       // undo restores run this too: only reload when the source really changed
       !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
@@ -1240,7 +1395,7 @@ file_avail(0) >= 0 ? (
     hist_reset();
   );
 ) : (
-  ser_ver = 7;
+  ser_ver = 8;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -1255,6 +1410,7 @@ file_avail(0) >= 0 ? (
     file_var(0, M_KIND[i]); file_var(0, M_NUM[i]); file_var(0, M_ENC[i]); file_var(0, M_CHN[i]);
     i += 1;
   );
+  file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
 );
 
 @gfx 900 760
@@ -1342,6 +1498,27 @@ function drag_param(k, p, px, n) local(u, len)
   clamp_params(p);
 );
 
+// R8.6: average of the intervals since the first tap; a pause of 2 s starts
+// over. From the third tap on, the nearest beat also moves onto the tap, so
+// the grid lines up with what was tapped.
+function tap() local(now, t, bl)
+(
+  src_playing ? (
+    now = time_precise();
+    now - tap_last > 2 ? ( tap_n = 0; tap_sum = 0; ) : ( tap_sum += now - tap_last; tap_n += 1; );
+    tap_last = now;
+    tap_n >= 2 ? (
+      set_bpm(60 / (tap_sum / tap_n));
+      t = V_POS[SRC] / fsr;
+      !has_grid ? ( has_grid = 1; gs = t; ) : (
+        bl = beat_len();
+        gs = t - floor((t - gs) / bl + 0.5) * bl;
+      );
+      norm_gs();
+    ) : say("Keep tapping on the beat.");
+  ) : say("Tap while the source plays.");
+);
+
 function button(x, y, w, hh, label, on) local(hot)
 (
   hot = inside(x, y, w, hh);
@@ -1350,6 +1527,35 @@ function button(x, y, w, hh, label, on) local(hot)
   gfx_measurestr(label, tw, th);
   text_at(x + (w - tw) / 2, y + (hh - th) / 2, label);
   hot && clicked;
+);
+
+// Grid edit's controls take the parameter row's place (R8). Cancel puts
+// back the grid as it was on entering (R8.9).
+function grid_row() local(gx, gw)
+(
+  gw = floor((gfx_w - 2 * pad - 8 * row_gap) / 9);
+  gx = pad;
+  rgb(C_PANEL); gfx_rect(gx, row_y, gw, row_h);
+  rgb(C_WARN); gfx_rect(gx, row_y, gw, 2);
+  rgb(C_DIM); text_at(gx + 8, row_y + 6, "BPM (click, type)");
+  rgb(C_TEXT);
+  text_at(gx + 8, row_y + 22, bpm_typing ? sprintf(#t, "%s_", #bt) : has_grid ? sprintf(#t, "%.2f", bpm) : "---");
+  clicked && inside(gx, row_y, gw, row_h) ? ( bpm_typing = 1; rename_on = 0; strcpy(#bt, ""); );   // R8.4
+  gx += gw + row_gap;
+  button(gx, row_y, gw, row_h, "/2", 0) && has_grid ? set_bpm(bpm / 2); gx += gw + row_gap;   // R6.6
+  button(gx, row_y, gw, row_h, "x2", 0) && has_grid ? set_bpm(bpm * 2); gx += gw + row_gap;
+  button(gx, row_y, gw, row_h, time_precise() - tap_last < 2 ? sprintf(#tl, "Tap %d", tap_n + 1) : "Tap", 0) ? tap(); gx += gw + row_gap;
+  button(gx, row_y, gw, row_h, "Set start", 0) ? (                                            // R8.5
+    !has_grid ? ( bpm = 120; has_grid = 1; );
+    gs = ph / fsr; norm_gs();
+  );
+  gx += gw + row_gap;
+  button(gx, row_y, gw, row_h, "Metronome", metro) ? metro = !metro; gx += gw + row_gap;     // R8.7
+  button(gx, row_y, gw, row_h, "Clear", 0) ? has_grid = 0; gx += gw + row_gap;               // R8.10
+  button(gx, row_y, gw, row_h, "Save", 1) ? ( ge_on = 0; bpm_typing = 0; ); gx += gw + row_gap;   // R8.8
+  button(gx, row_y, gw, row_h, "Cancel", 0) ? (
+    has_grid = ge_has0; bpm = ge_bpm0; gs = ge_gs0; ge_on = 0; bpm_typing = 0;
+  );
 );
 
 // Waveform of t0..t1 seconds into a box. Picks the coarsest peak table
@@ -1405,6 +1611,26 @@ has_source ? (
       floor(sec_len / 60), sec_len - floor(sec_len / 60) * 60, fsr / 1000, nch == 1 ? "mono" : "stereo"))
   : text_at(pad, 30, "loading ...");
   button(gfx_w - pad - 70, 13, 70, 26, "Eject", 0) ? eject();                // R3.1
+  state == S_READY ? (
+    hx = gfx_w - pad - 70 - 16 - 84;
+    button(hx, 13, 84, 26, "Quantize", slider6) ? ( slider6 = !slider6; slider_automate(slider6); );   // R10.10
+    ana_state ? (
+      hx -= 76; button(hx, 13, 70, 26, "Cancel", 0) ? ana_cancel_req = 1;                             // R4.4
+      rgb(C_DIM); sprintf(#t, "Analysing %d%%", floor(ana_progress() * 100));                          // R4.3
+      gfx_measurestr(#t, tw, th); text_at(hx - tw - 12, 20, #t);
+    ) : (
+      hx -= 64; button(hx, 13, 58, 26, "Grid", ge_on) ? (                                              // R8.1
+        ge_on ? ( ge_on = 0; bpm_typing = 0; )                                                 // = Save (R8.8)
+              : ( ge_on = 1; ge_has0 = has_grid; ge_bpm0 = bpm; ge_gs0 = gs; );
+      );
+      hx -= 40; button(hx, 13, 34, 26, "x2", 0) && has_grid ? set_bpm(bpm * 2);                         // R6.6
+      hx -= 40; button(hx, 13, 34, 26, "/2", 0) && has_grid ? set_bpm(bpm / 2);
+      gfx_setfont(1, "Arial", 17); rgb(has_grid ? C_TEXT : C_DIM);
+      has_grid ? sprintf(#t, "%.2f BPM", bpm) : strcpy(#t, "--- BPM");                                  // R6.5, R4.7
+      gfx_measurestr(#t, tw, th); text_at(hx - tw - 14, 17, #t);
+      gfx_setfont(2, "Arial", 13);
+    );
+  );
 ) : (
   rgb(C_DIM); text_at(pad, 17, "No source loaded");
 );
@@ -1463,6 +1689,37 @@ state == S_READY ? (
   );
   rgb(C_WAVE);
   draw_wave(mw_x, mw_y, mw_w, mw_h, view_start, view_start + view_len);
+  // beatgrid: beats faint, bars stronger with their number; denser than
+  // 4 px only bars are drawn (R4.2, R8.1)
+  has_grid ? (
+    bl = beat_len();
+    bpx = bl / view_len * mw_w;
+    kstep = bpx >= 4 ? 1 : bpx * 4 >= 4 ? 4 : 0;
+    kstep ? (
+      kb = ceil((view_start - gs) / bl / kstep) * kstep;
+      while ((tb = gs + kb * bl) <= view_start + view_len ? (
+        cx = t2x(tb);
+        isbar = kb - floor(kb / 4) * 4 == 0;
+        gfx_set(1, 1, 1, isbar ? (ge_on ? 0.6 : 0.3) : (ge_on ? 0.3 : 0.12));
+        gfx_line(cx, mw_y, cx, mw_y + mw_h - 1);
+        isbar ? ( gfx_x = cx + 3; gfx_y = mw_y + mw_h - 30; gfx_drawnumber(floor(kb / 4) + 1, 0); );
+        kb += kstep;
+        1;
+      ) : 0);
+      gfx_a = 1;
+    );
+    // with Quantize on, the 1/8 lines cues snap to, once they are 6 px apart (R10.10)
+    slider6 && bpx / 8 >= 6 ? (
+      kb = ceil((view_start - gs) / bl * 8);
+      gfx_set(1, 1, 1, 0.07);
+      while ((tb = gs + kb * bl / 8) <= view_start + view_len ? (
+        kb - floor(kb / 8) * 8 ? ( cx = t2x(tb); gfx_line(cx, mw_y + mw_h * 0.3, cx, mw_y + mw_h * 0.7); );
+        kb += 1;
+        1;
+      ) : 0);
+      gfx_a = 1;
+    );
+  );
   j = 0;
   loop(NPADS,
     CU_SET[j] ? (
@@ -1489,7 +1746,19 @@ state == S_READY ? (
   cx >= mw_x && cx < mw_x + mw_w ? ( gfx_line(cx, mw_y, cx, mw_y + mw_h - 1); gfx_line(cx + 1, mw_y, cx + 1, mw_y + mw_h - 1); );
 
   // mouse down: handle drag, scrub, or overview seek
-  clicked && !learn_active && inside(mw_x, mw_y, mw_w, mw_h) ? (
+  // grid edit: drag a beat or bar marker to stretch the grid around its
+  // start (R8.2); drag the start marker, or anywhere with Alt, to slide the
+  // whole grid (R8.3); elsewhere scrub. Cue handles rest meanwhile.
+  clicked && ge_on && !learn_active && inside(mw_x, mw_y, mw_w, mw_h) ? (
+    ge_t0 = x2t(mouse_x); ge_gsd = gs;
+    drag_mode = 3;
+    has_grid ? (
+      kb = floor((ge_t0 - gs) / beat_len() + 0.5);
+      mouse_cap & 16 ? drag_mode = 8
+      : abs(mouse_x - t2x(gs + kb * beat_len())) <= 6 ? ( kb == 0 ? drag_mode = 8 : ( drag_mode = 7; ge_k = kb; ); );
+    );
+  );
+  clicked && !ge_on && !learn_active && inside(mw_x, mw_y, mw_w, mw_h) ? (
     drag_mode = 3;                                        // scrub unless a handle is hit (R6.3)
     j = 0;
     loop(NPADS,
@@ -1510,7 +1779,10 @@ state == S_READY ? (
       seek_pos = max(0, min(sec_len, x2t(mouse_x))) * fsr; seek_req = 1;
     ) : drag_mode == 4 ? (
       seek_pos = max(0, min(1, (mouse_x - ov_x) / ov_w)) * sec_len * fsr; seek_req = 1;   // R6.4
-    );
+    ) : drag_mode == 7 ? (
+      gt = (x2t(mouse_x) - gs) / ge_k;
+      gt > 0 ? set_bpm(60 / gt);
+    ) : drag_mode == 8 ? gs = ge_gsd + x2t(mouse_x) - ge_t0;
   );
 ) : state == S_LOADING || state == S_PEAKS ? (
   // R4.3
@@ -1529,6 +1801,7 @@ state == S_READY ? (
   text_at(mw_x + 16, mw_y + 30, "Select an audio item (WAV or AIFF) in REAPER and run the action");
   text_at(mw_x + 16, mw_y + 50, "\"ReaFlip_Load.lua\" to load it here.");
 );
+released && drag_mode == 8 ? norm_gs();
 released ? drag_mode = 0;
 
 learn_active ? (
@@ -1627,6 +1900,7 @@ pw = floor((gfx_w - 2 * pad - 7 * row_gap) / 8);
 // Several selected cues all change together (R17.14).
 nsel = sel_count();
 has_sel = state == S_READY && nsel > 0 && selected >= 0;
+ge_on ? grid_row() : (
 k = 0;
 loop(8,
   px0 = pad + k * (pw + row_gap);
@@ -1658,6 +1932,21 @@ drag_mode == 5 && (mouse_cap & 1) && has_sel && mouse_y != drag_y ? (
   n = key_acc > 0 ? floor(key_acc / 8) : -floor(-key_acc / 8);
   key_acc -= n * 8;
   q = 0; loop(NPADS, is_sel(q) ? drag_param(drag_param_k, q, dpx, n); q += 1);
+);
+);
+bpm_typing ? (
+  // typed BPM: Enter applies it if within 20-220, otherwise the old one stays (R8.12)
+  while ((c = gfx_getchar()) > 0 ? (
+    c == 13 ? (
+      v = 0;
+      match("%f", #bt, v) && v >= 20 && v <= 220 ? ( bpm = v; !has_grid ? ( has_grid = 1; gs = 0; ); );
+      bpm_typing = 0;
+    )
+    : c == 27 ? bpm_typing = 0
+    : c == 8 ? ( strlen(#bt) > 0 ? str_setlen(#bt, strlen(#bt) - 1); )
+    : (c >= 48 && c <= 57) || c == 46 ? ( strlen(#bt) < 7 ? ( sprintf(#kc, "%c", c); strcat(#bt, #kc); ); );
+    bpm_typing;
+  ) : 0);
 );
 pads_y = row_y + row_h + 12;
 gap = 8;
@@ -1732,7 +2021,7 @@ button(sx, sy + 76, sw / 2 - 3, sh, "Undo", 0) && ready ? undo_req = 1;         
 button(sx + sw / 2 + 3, sy + 76, sw / 2 - 3, sh, "Redo", 0) && ready ? redo_req = 1;                      // R19.2
 rgb(C_DIM); text_at(sx, sy + 108, sprintf(#t, "%d undo  /  %d redo", h_undo, h_redo));
 button(sx, sy + 136, sw, sh, "Rename", rename_on) && ready && has_sel && !rename_on ? (
-  rename_on = 1; rename_pad = selected; cue_name(selected, #rn);
+  rename_on = 1; bpm_typing = 0; rename_pad = selected; cue_name(selected, #rn);
 );
 rename_on ? (
   // typed into the window; Enter keeps the name, Esc drops it (R12.6)

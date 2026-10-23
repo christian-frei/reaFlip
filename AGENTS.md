@@ -164,11 +164,18 @@ project rate (resample on playback, linear interpolation is fine for v1).
 - **Step** = 1/100 of the span shown in the main waveform; dial ticks,
   Slicer region shifts and the minimum cue length all use it (Terms).
   Constant in one place — the user may resize it later.
-- **Quantize** snaps to 1/8 beat of the grid; off by default (R10.10,
-  R10.17).
-- **Beatgrid** is one BPM (20–220) + grid start (R8). Tempo detection and
-  downbeat on load (R4.1–4.2): onset envelope + autocorrelation is enough;
-  keep it deterministic.
+- **Beatgrid** is one BPM (20–220) + grid start `gs` = first downbeat in
+  seconds, kept within the first bar (`norm_gs`); 4/4 is assumed (R8).
+  Analysis (`ana_step`, a slice per block, deterministic): onset strength
+  per 256-sample frame = rises in log energy of the signal and of its first
+  difference; autocorrelation over 20–220 BPM weighted towards 120 BPM
+  (log-Gaussian, 0.9 octave) picks the period; a comb over the whole
+  envelope refines period (±2 %) and phase (½ frame); the strongest of the
+  four beat phases is the downbeat. Saved with the project (format v8), so
+  a reopen does not re-analyse; a load or swap does (R4.6).
+- **Quantize** is slider 6 (automatable like the other modes). `snap()` sits
+  inside `new_cue`, `set_start` and `set_end`, so mouse, dial, arrows and
+  lazy chop all snap; with Quantize on a dial tick is 1/8 beat.
 - **Find samples** (R14): onset strength from the same onset envelope; take
   the N strongest (N = 4–16, default 16), sort by time, skip favourite pads.
   Same input → same output, no randomness.
@@ -190,6 +197,14 @@ project rate (resample on playback, linear interpolation is fine for v1).
 - **Filter** (R17.4–17.6): RBJ biquad per voice, Q 0.707, cutoff on a log
   scale 17 kHz → 80 Hz; recomputed in `@block` when the cue's value changes
   while it sounds (the touch strip moves it live).
+- **Stretch** (R23, slice 5e): time-domain overlap-add per voice (WSOLA:
+  ~40–80 ms Hann grains, the next grain's start searched by
+  cross-correlation so waveforms line up). Cheap enough for 16 voices and
+  good on drums; tonal material gets some phasiness at large ratios. A
+  phase vocoder (JSFX has `fft`) sounds smoother on pads but smears
+  transients and costs far more — only if WSOLA disappoints. Sync ratio =
+  project `tempo` / source BPM; the voice's read rate stays the key/speed
+  ratio, the grain hop carries the stretch.
 - **Lazy chop** (R9): state machine — idle / pass running; pass ends on stop
   or when all 16 pads hold cues.
 
@@ -276,6 +291,7 @@ groups it covers, e.g. `Slice 1: load section, waveform, persistence (R1–R5, R
 | 5b Organise | multi-select, Select All, favourites, delete all, undo/redo, move/swap/copy/rename; parameters on several cues | R11.4, R12, R17.14–17.16, R18, R19, R21.7–21.8, R21.11, R21.13 |
 | 5c Beatgrid | tempo + downbeat analysis on load (cancellable), BPM display, double/half, grid edit, Quantize; SLAB arrows (one beat), Shift+Select All | R4, R6.5–6.6, R8, R10.5–10.6, R10.10–10.12, R10.17, R21.27 |
 | 5d Autoset | Slicer, Find samples; SLAB Auto Set, Shift+Auto Set | R13, R14, R21.9–21.10 |
+| 5e Stretch | stretch engine per voice; Sync to project tempo (needs 5c's BPM), per-cue stretch 0.25–4×, key shift that keeps tempo | R17.8, R23 |
 
 5b comes before 5d because Auto Set overwrites cues and undo is its safety
 net; 5c before 5d because Slicer needs the grid. Tempo detection (5c) is the
