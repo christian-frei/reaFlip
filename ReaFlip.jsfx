@@ -39,6 +39,14 @@ CU_LEVEL = CU_SET + 48; CU_ATT = CU_SET + 64; CU_REL = CU_SET + 80; // dB, secon
 CU_FILT = CU_SET + 96;            // -1 low-pass .. 0 off .. +1 high-pass (R17.4-R17.6)
 CU_REV = CU_SET + 112; CU_KEY = CU_SET + 128;   // 0/1; semitones -24..24
 CU_LOOP = CU_SET + 144; CU_XF = CU_SET + 160;   // 0 off, 1 forward, 2 backward, 3 alternate; seconds
+CU_FAV = CU_SET + 176;            // favourite mark (R18.4)
+CU_COL = CU_SET + 192;            // palette index; travels with the cue when moved or copied (R12.3)
+CU_NAME = CU_SET + 208; NAME_LEN = 24;   // per pad: character codes, 0-terminated (R12.6)
+NCF = 13;                         // numeric cue fields, 16 values each
+CUE_SIZE = 208 + NPADS * NAME_LEN;       // all cue state as one block, so undo can copy it
+SEL = 1721000;                    // selection flags; not part of undo
+// undo (R19): a ring of cue-state snapshots; SEEN is the state last looked at
+SEEN = 1797000; HIST = 1800000; HSLOTS = 128;   // 127 steps back (R19.3)
 // voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
 // 32 plays the source itself (play/pause and lazy chop)
 NV = 33; SRC = 32;
@@ -111,18 +119,23 @@ function all_voices_off()
   ph_voice = -1;
 );
 
-function reset_cues()
+function reset_cues() local(i)
 (
   // a fresh load starts without any cues (R1.3)
   all_voices_off();
-  memset(CU_SET, 0, NPADS);
+  memset(CU_SET, 0, CUE_SIZE);
   memset(CU_END, -1, NPADS);
-  memset(CU_LEVEL, 0, NPADS);
-  memset(CU_ATT, 0, NPADS);
-  memset(CU_REL, 0, NPADS);
-  memset(CU_FILT, 0, NPADS); memset(CU_REV, 0, NPADS); memset(CU_KEY, 0, NPADS);
-  memset(CU_LOOP, 0, NPADS); memset(CU_XF, 0, NPADS);
+  i = 0; loop(NPADS, CU_COL[i] = i; i += 1);
+  memset(SEL, 0, NPADS);
   selected = -1;
+);
+
+// the current cue state becomes the only undo step, e.g. after a load
+function hist_reset()
+(
+  h_cur = 0; h_undo = 0; h_redo = 0; h_quiet = 0;
+  memcpy(HIST, CU_SET, CUE_SIZE);
+  memcpy(SEEN, CU_SET, CUE_SIZE);
 );
 
 function show_error(text)
@@ -262,7 +275,7 @@ function load_step()
       i += 1;
     );
     pk_frame = i;
-    pk_frame >= frames ? state = S_READY;
+    pk_frame >= frames ? ( state = S_READY; hist_reset(); );
   );
 );
 
@@ -296,6 +309,7 @@ function new_cue(p, t)
   CU_SET[p] = 1; CU_START[p] = t; CU_END[p] = -1;
   CU_LEVEL[p] = 0; CU_ATT[p] = 0; CU_REL[p] = 0;
   CU_FILT[p] = 0; CU_REV[p] = 0; CU_KEY[p] = 0; CU_LOOP[p] = 0; CU_XF[p] = 0;   // R17.19, R17.24
+  CU_FAV[p] = 0; CU_COL[p] = p; memset(CU_NAME + p * NAME_LEN, 0, NAME_LEN);
 );
 
 function all_pads_set() local(i, n)
@@ -427,12 +441,51 @@ function play_cue(p, vel) local(i)
   ph_voice = p;
 );
 
+// Selection (R18). SEL marks the selected cues; `selected` is the one the
+// dial, handles and waveform work on, always one of them (Terms: Selected cue).
+function select_only(p) ( memset(SEL, 0, NPADS); SEL[p] = 1; selected = p; );
+
+function is_sel(q) ( state == S_READY && SEL[q] && CU_SET[q]; );
+
+function first_sel() local(i, f) ( f = -1; i = 0; loop(NPADS, f < 0 && SEL[i] && CU_SET[i] ? f = i; i += 1); f; );
+
+function sel_count() local(i, n) ( n = 0; i = 0; loop(NPADS, n += SEL[i] && CU_SET[i]; i += 1); n; );
+
+function all_selected() local(i, all, any)
+(
+  all = 1; any = 0; i = 0;
+  loop(NPADS, CU_SET[i] ? ( any = 1; !SEL[i] ? all = 0; ); i += 1);
+  any && all;
+);
+
+function select_all() local(i)   // R18.2, R18.3
+(
+  all_selected() ? ( memset(SEL, 0, NPADS); selected = -1; ) : (
+    i = 0; loop(NPADS, SEL[i] = CU_SET[i]; i += 1);
+    selected < 0 || !CU_SET[selected] ? selected = first_sel();
+  );
+);
+
+function sel_toggle(p)           // R18.1
+(
+  CU_SET[p] ? (
+    SEL[p] = !SEL[p];
+    SEL[p] ? selected = p : selected == p ? selected = first_sel();
+  );
+);
+
+function toggle_fav() local(i, all)   // R18.4, R18.5: all marked -> unmark, else mark
+(
+  all = 1; i = 0; loop(NPADS, is_sel(i) && !CU_FAV[i] ? all = 0; i += 1);
+  i = 0; loop(NPADS, is_sel(i) ? CU_FAV[i] = !all; i += 1);
+);
+
 function pad_press(p, vel)
 (
   state == S_READY ? (                                    // R9.12, R15.14
     !CU_SET[p] ? (
       new_cue(p, ph / fsr);                               // R9.2, R9.4, R9.10
-      selected = p;
+      select_only(p);
       slider5 ? (
         // lazy chop: an empty pad starts a pass; while it runs the source
         // keeps playing and every empty pad drops a cue (R9.3, R9.5)
@@ -442,15 +495,15 @@ function pad_press(p, vel)
       );
     ) : lazy_pass ? (
       seek(CU_START[p] * fsr);                            // R9.7
-      selected = p;
+      select_only(p);
     ) : slider2 == 1 && CU_LOOP[p] && (V_ST[p] == VS_ATT || V_ST[p] == VS_SUS) ? (
       // R15.18: in Trigger mode a second press ends a looping cue
       V_REL[p] = V_ENV[p] / max(CU_REL[p] * srate, ramp_n);
       V_ST[p] = VS_REL;
-      selected = p;
+      select_only(p);
     ) : (
       play_cue(p, vel);
-      selected = p;                                       // R15.3
+      select_only(p);                                     // R15.3
     );
   );
 );
@@ -472,7 +525,41 @@ function delete_cue(p)
     cut(p);
     ph_voice == p ? ph_voice = -1;
     CU_SET[p] = 0; CU_END[p] = -1;                        // R11.1
-    selected == p ? selected = -1;
+    SEL[p] = 0;
+    selected == p ? selected = first_sel();
+  );
+);
+
+// R11.1, R11.4: the Delete button removes every selected cue
+function delete_selected() local(i) ( i = 0; loop(NPADS, is_sel(i) ? delete_cue(i); i += 1); );
+
+function copy_cue(a, b) local(k)
+(
+  k = 0; loop(NCF, CU_SET[b + k * 16] = CU_SET[a + k * 16]; k += 1);
+  memcpy(CU_NAME + b * NAME_LEN, CU_NAME + a * NAME_LEN, NAME_LEN);
+);
+
+// A pad dragged onto another: move to an empty pad, swap with a full one,
+// or copy over it (R12.1-R12.4); onto itself or from an empty pad, nothing
+// happens (R12.7, R12.8).
+function pad_op(a, b, copy) local(k, t)
+(
+  a != b && CU_SET[a] ? (
+    cut(a); cut(b);
+    ph_voice == a || ph_voice == b ? ph_voice = -1;
+    copy ? copy_cue(a, b)
+    : CU_SET[b] ? (
+      k = 0; loop(NCF, t = CU_SET[a + k * 16]; CU_SET[a + k * 16] = CU_SET[b + k * 16]; CU_SET[b + k * 16] = t; k += 1);
+      k = 0;
+      loop(NAME_LEN,
+        t = CU_NAME[a * NAME_LEN + k]; CU_NAME[a * NAME_LEN + k] = CU_NAME[b * NAME_LEN + k]; CU_NAME[b * NAME_LEN + k] = t;
+        k += 1;
+      );
+    ) : (
+      copy_cue(a, b);
+      CU_SET[a] = 0; CU_END[a] = -1; CU_FAV[a] = 0;
+    );
+    select_only(b);
   );
 );
 
@@ -699,6 +786,65 @@ function say(text) ( strcpy(#slab_msg, text); );
 
 function later(k) ( sprintf(#slab_msg, "%s: comes with slice 5.", learn_name(k)); );
 
+function cue_differs(addr) local(i, dif)
+(
+  dif = 0; i = 0;
+  while (!dif && i < CUE_SIZE ? ( dif = CU_SET[i] != addr[i]; i += 1; 1; ) : 0);
+  dif;
+);
+
+function hist_push()
+(
+  h_cur = (h_cur + 1) % HSLOTS;
+  memcpy(HIST + h_cur * CUE_SIZE, CU_SET, CUE_SIZE);
+  h_undo = min(h_undo + 1, HSLOTS - 1);
+  h_redo = 0;                    // R19.4
+);
+
+// An edit becomes one undo step once it has rested, so a drag or a burst of
+// dial ticks is one action, not hundreds.
+function hist_track(dt)
+(
+  cue_differs(HIST + h_cur * CUE_SIZE) ? (
+    cue_differs(SEEN) ? ( memcpy(SEEN, CU_SET, CUE_SIZE); h_quiet = 0; )
+    : ( h_quiet += dt; h_quiet > 0.4 && !mouse_down ? hist_push(); );
+  );
+);
+
+function after_restore() local(i)
+(
+  memcpy(SEEN, CU_SET, CUE_SIZE);
+  i = 0;
+  loop(NPADS,
+    !CU_SET[i] ? ( cut(i); SEL[i] = 0; ph_voice == i ? ph_voice = -1; );
+    i += 1;
+  );
+  selected >= 0 && !CU_SET[selected] ? selected = first_sel();
+);
+
+function undo()                  // R19.1, R19.5
+(
+  cue_differs(HIST + h_cur * CUE_SIZE) ? hist_push();   // a still-resting edit is undone first
+  h_undo > 0 ? (
+    h_cur = (h_cur + HSLOTS - 1) % HSLOTS;
+    memcpy(CU_SET, HIST + h_cur * CUE_SIZE, CUE_SIZE);
+    h_undo -= 1; h_redo += 1;
+    after_restore();
+    say("Undo");
+  ) : say("Nothing to undo");
+);
+
+function redo()                  // R19.2, R19.5
+(
+  h_redo > 0 && !cue_differs(HIST + h_cur * CUE_SIZE) ? (
+    h_cur = (h_cur + 1) % HSLOTS;
+    memcpy(CU_SET, HIST + h_cur * CUE_SIZE, CUE_SIZE);
+    h_undo += 1; h_redo -= 1;
+    after_restore();
+    say("Redo");
+  ) : say("Nothing to redo");
+);
+
 function rel_delta(k, v) local(d)
 (
   M_ENC[k] == E_CENTER ? v - 64
@@ -756,9 +902,9 @@ function nudge_time(t, d) local(sz)
   max(0, min(10, t + d * sz));   // R17.2, R17.3 range, held at the limits (R17.17)
 );
 
-function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );
+function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );   // the dial's cue
 
-function slab_control(k, val) local(d, i, pr, f)
+function slab_control(k, val) local(d, i, pr, f, q)
 (
   step_kind(k) == 1 ? (
     d = rel_delta(k, val);
@@ -769,32 +915,45 @@ function slab_control(k, val) local(d, i, pr, f)
       );
     ) : (
       i = k - L_ENC1;
-      has_target() ? (
-        i == 0 ? CU_LEVEL[selected] += d * 0.5                              // R21.2
-        : i == 1 ? (                                                        // R21.3
-          f = CU_FILT[selected] + d * 0.02;
-          // crossing the centre stops at off, so it can be found by feel (R17.6)
-          CU_FILT[selected] != 0 && (f < 0) != (CU_FILT[selected] < 0) ? f = 0;
-          CU_FILT[selected] = f;
-        )
-        : i == 2 ? CU_ATT[selected] = nudge_time(CU_ATT[selected], d)       // R21.4
-        : CU_KEY[selected] += d;                                            // R21.5
-        clamp_params(selected);
+      q = 0;
+      loop(NPADS,                                                           // R17.14
+        is_sel(q) ? (
+          i == 0 ? CU_LEVEL[q] += d * 0.5                                   // R21.2
+          : i == 1 ? (                                                      // R21.3
+            f = CU_FILT[q] + d * 0.02;
+            // crossing the centre stops at off, so it can be found by feel (R17.6)
+            CU_FILT[q] != 0 && (f < 0) != (CU_FILT[q] < 0) ? f = 0;
+            CU_FILT[q] = f;
+          )
+          : i == 2 ? CU_ATT[q] = nudge_time(CU_ATT[q], d)                   // R21.4
+          : CU_KEY[q] += d;                                                 // R21.5
+          clamp_params(q);
+        );
+        q += 1;
       );
     );
   ) : k == L_STRIP ? (
-    has_target() ? (
-      strip_mode == 0 ? (
-        CU_FILT[selected] = val / 127 * 2 - 1;                               // R21.17
-        abs(CU_FILT[selected]) < 0.04 ? CU_FILT[selected] = 0;               // a centre you can hit (R17.6)
-      ) : strip_mode == 1 ? CU_LEVEL[selected] = -12 + 24 * val / 127        // R21.18
-      : CU_XF[selected] = (cue_end(selected) - CU_START[selected]) * val / 127;   // R21.26
-      clamp_params(selected);
+    q = 0;
+    loop(NPADS,
+      is_sel(q) ? (
+        strip_mode == 0 ? (
+          CU_FILT[q] = val / 127 * 2 - 1;                                    // R21.17
+          abs(CU_FILT[q]) < 0.04 ? CU_FILT[q] = 0;                           // a centre you can hit (R17.6)
+        ) : strip_mode == 1 ? CU_LEVEL[q] = -12 + 24 * val / 127             // R21.18
+        : CU_XF[q] = (cue_end(q) - CU_START[q]) * val / 127;                 // R21.26
+        clamp_params(q);
+      );
+      q += 1;
     );
   ) : (
     pr = val > 0;
     k == L_SHIFT ? slab_shift = pr
-    : k == L_DELETE ? slab_delete = pr
+    : k == L_DELETE ? (
+      // Delete held + pad removes that pad (R11.3); Delete pressed alone
+      // removes the selected cues, all of them after Select All (R11.1, R11.4)
+      pr ? ( slab_delete = 1; delete_used = 0; )
+      : ( slab_delete && !delete_used ? delete_selected(); slab_delete = 0; );
+    )
     : pr ? (
       k == L_DIALPRESS || k == L_PLAY ? (                                    // R21.1, R21.15
         state == S_READY ? ( src_playing ? src_stop() : src_start(ph); );
@@ -807,10 +966,14 @@ function slab_control(k, val) local(d, i, pr, f)
         say(strip_mode == 0 ? "Touch strip: filter" : strip_mode == 1 ? "Touch strip: pad level" : "Touch strip: loop crossfade");
       ) : k >= L_ENC1P && k < L_ENC1P + 4 ? (
         i = k - L_ENC1P;                                                     // R21.6
-        has_target() ? reset_param(i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 1 : 4, selected);
+        q = 0; loop(NPADS, is_sel(q) ? reset_param(i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 1 : 4, q); q += 1);
       ) : k == L_NOTEREP ? (
-        has_target() ? CU_LOOP[selected] = (CU_LOOP[selected] + 1) % 4;      // R21.25
-      ) : k == L_LEFT || k == L_RIGHT ? (
+        q = 0; loop(NPADS, is_sel(q) ? CU_LOOP[q] = (CU_LOOP[q] + 1) % 4; q += 1);   // R21.25
+      ) : k == L_UNDO ? ( state == S_READY ? undo(); )                       // R21.7
+      : k == L_REDO ? ( state == S_READY ? redo(); )                         // R21.8
+      : k == L_FAV ? toggle_fav()                                            // R21.11
+      : k == L_SELALL && !slab_shift ? ( state == S_READY ? select_all(); )  // R21.13
+      : k == L_LEFT || k == L_RIGHT ? (
         say("Arrows need the beatgrid: comes with slice 5.");
       ) : later(k);
     );
@@ -840,7 +1003,7 @@ function route_midi(offset, m1, m2, m3) local(st, ch, i, k, val, hit)
       !hit && M_PAD[i] == m2 ? (
         hit = 1;
         val = st == 0x90 ? m3 : 0;                        // note-on with velocity 0 is a release
-        slab_delete && val > 0 ? ( state == S_READY ? delete_cue(i); )   // R11.3
+        slab_delete && val > 0 ? ( delete_used = 1; state == S_READY ? delete_cue(i); )   // R11.3
         : add_event(offset, i, val);
       );
       i += 1;
@@ -885,7 +1048,15 @@ state == S_READY ? (                                      // R6.7: ignored witho
   seek_req ? seek(seek_pos);
   del_req ? delete_cue(del_req - 1);
 );
+state == S_READY ? (
+  undo_req ? undo();
+  redo_req ? redo();
+  delsel_req ? delete_selected();
+  padop_req ? pad_op(padop_from, padop_to, padop_copy);
+  hist_track(samplesblock / srate);
+);
 play_req = 0; seek_req = 0; del_req = 0;
+undo_req = 0; redo_req = 0; delsel_req = 0; padop_req = 0;
 
 // a filter moved while its cue sounds follows at once (R21.17)
 i = 0;
@@ -1016,12 +1187,16 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 6 ? (
+  ser_ver >= 1 && ser_ver <= 7 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
     file_var(0, ser_has);
-    ser_ver >= 2 ? (
+    ser_ver >= 7 ? (
+      i = 0; loop(CUE_SIZE, file_var(0, CU_SET[i]); i += 1);
+    ) : ser_ver >= 2 ? (
+      memset(CU_FAV, 0, NPADS); memset(CU_NAME, 0, NPADS * NAME_LEN);
+      i = 0; loop(NPADS, CU_COL[i] = i; i += 1);
       i = 0;
       loop(NPADS,
         file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
@@ -1061,23 +1236,18 @@ file_avail(0) >= 0 ? (
         reload_pending = 1;
       );
     ) : has_source ? eject();
+    memset(SEL, 0, NPADS); selected = -1;
+    hist_reset();
   );
 ) : (
-  ser_ver = 6;
+  ser_ver = 7;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
   file_var(0, sec_start);
   file_var(0, sec_len);
   file_var(0, has_source);
-  i = 0;
-  loop(NPADS,
-    file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
-    file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
-    file_var(0, CU_FILT[i]); file_var(0, CU_REV[i]); file_var(0, CU_KEY[i]);
-    file_var(0, CU_LOOP[i]); file_var(0, CU_XF[i]);
-    i += 1;
-  );
+  i = 0; loop(CUE_SIZE, file_var(0, CU_SET[i]); i += 1);
   file_var(0, M_CH);
   i = 0; loop(NPADS, file_var(0, M_PAD[i]); i += 1);
   i = 0;
@@ -1110,24 +1280,52 @@ function param_label(k)
   : k == 4 ? "Key" : k == 5 ? "Reverse" : k == 6 ? "Loop" : "Crossfade";
 );
 
-function param_text(k, p) local(f, fc)
+function param_val(k, p)
 (
-  k == 0 ? sprintf(#pv, "%+.1f dB", CU_LEVEL[p])
-  : k == 1 ? fmt_time(CU_ATT[p]) : k == 2 ? fmt_time(CU_REL[p])
+  k == 0 ? CU_LEVEL[p] : k == 1 ? CU_ATT[p] : k == 2 ? CU_REL[p] : k == 3 ? CU_FILT[p]
+  : k == 4 ? CU_KEY[p] : k == 5 ? CU_REV[p] : k == 6 ? CU_LOOP[p] : CU_XF[p];
+);
+
+// several cues selected: their shared value, or the default (0 for every
+// parameter) when they differ (R17.15, R17.16)
+function shown_val(k) local(i, v)
+(
+  v = param_val(k, selected);
+  i = 0; loop(NPADS, is_sel(i) && param_val(k, i) != v ? v = 0; i += 1);
+  v;
+);
+
+function param_text(k, v) local(fc)
+(
+  k == 0 ? sprintf(#pv, "%+.1f dB", v)
+  : k == 1 || k == 2 || k == 7 ? fmt_time(v)
   : k == 3 ? (
-    f = CU_FILT[p]; fc = filter_fc(f);
-    f == 0 ? strcpy(#pv, "off")
-    : sprintf(#pv, fc < 1000 ? "%s %.0f Hz" : "%s %.1f kHz", f < 0 ? "LP" : "HP", fc < 1000 ? fc : fc / 1000);
+    fc = filter_fc(v);
+    v == 0 ? strcpy(#pv, "off")
+    : sprintf(#pv, fc < 1000 ? "%s %.0f Hz" : "%s %.1f kHz", v < 0 ? "LP" : "HP", fc < 1000 ? fc : fc / 1000);
   )
-  : k == 4 ? sprintf(#pv, "%+d st", CU_KEY[p])
-  : k == 5 ? strcpy(#pv, CU_REV[p] ? "on" : "off")
-  : k == 6 ? strcpy(#pv, CU_LOOP[p] == 1 ? "forward" : CU_LOOP[p] == 2 ? "backward" : CU_LOOP[p] == 3 ? "alternate" : "off")
-  : fmt_time(CU_XF[p]);
+  : k == 4 ? sprintf(#pv, "%+d st", v)
+  : k == 5 ? strcpy(#pv, v ? "on" : "off")
+  : strcpy(#pv, v == 1 ? "forward" : v == 2 ? "backward" : v == 3 ? "alternate" : "off");
+);
+
+function cue_name(p, dst) local(i, c)
+(
+  strcpy(dst, "");
+  i = 0;
+  while ((c = CU_NAME[p * NAME_LEN + i]) > 0 && i < NAME_LEN - 1 ? ( sprintf(#nc, "%c", c); strcat(dst, #nc); i += 1; 1; ) : 0);
+  dst;
+);
+
+function name_set(p, src) local(i)
+(
+  memset(CU_NAME + p * NAME_LEN, 0, NAME_LEN);
+  i = 0; loop(min(strlen(src), NAME_LEN - 1), CU_NAME[p * NAME_LEN + i] = str_getchar(src, i); i += 1);
 );
 
 // Dragging up raises a value; px is already scaled down for fine steps.
 // Times move on a square-root scale so short values stay easy to set.
-function drag_param(k, p, px) local(u, len, n)
+function drag_param(k, p, px, n) local(u, len)
 (
   k == 0 ? CU_LEVEL[p] += px * 0.1
   : k == 1 ? ( u = min(1, max(0, sqrt(CU_ATT[p] / 10) + px * 0.004)); CU_ATT[p] = 10 * u * u; )
@@ -1136,12 +1334,7 @@ function drag_param(k, p, px) local(u, len, n)
     CU_FILT[p] += px * 0.005;
     abs(CU_FILT[p]) < 0.003 ? CU_FILT[p] = 0;           // passing the centre lands on off
   )
-  : k == 4 ? (
-    // semitone steps (R17.8): collect pixels until a whole step is reached
-    key_acc += px;
-    n = key_acc > 0 ? floor(key_acc / 8) : -floor(-key_acc / 8);
-    CU_KEY[p] += n; key_acc -= n * 8;
-  )
+  : k == 4 ? CU_KEY[p] += n      // whole semitones, counted by the caller (R17.8)
   : k == 7 ? (
     len = cue_end(p) - CU_START[p];
     len > 0 ? ( u = min(1, max(0, CU_XF[p] / len + px * 0.004)); CU_XF[p] = len * u; );
@@ -1253,7 +1446,7 @@ state == S_READY ? (
   gfx_a = 1;
   j = 0;
   loop(NPADS,
-    CU_SET[j] ? ( rgb(PALETTE[j]); cx = ov_x + CU_START[j] / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1); );
+    CU_SET[j] ? ( rgb(PALETTE[CU_COL[j]]); cx = ov_x + CU_START[j] / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1); );
     j += 1;
   );
   gfx_set(1, 1, 1);
@@ -1264,7 +1457,7 @@ state == S_READY ? (
   loop(NPADS,
     CU_SET[j] && CU_END[j] >= 0 ? (
       x0 = max(mw_x, t2x(CU_START[j])); x1 = min(mw_x + mw_w, t2x(CU_END[j]));
-      x1 > x0 ? ( rgb(PALETTE[j]); gfx_a = 0.18; gfx_rect(x0, mw_y, x1 - x0, mw_h); gfx_a = 1; );
+      x1 > x0 ? ( rgb(PALETTE[CU_COL[j]]); gfx_a = 0.18; gfx_rect(x0, mw_y, x1 - x0, mw_h); gfx_a = 1; );
     );
     j += 1;
   );
@@ -1273,7 +1466,7 @@ state == S_READY ? (
   j = 0;
   loop(NPADS,
     CU_SET[j] ? (
-      rgb(PALETTE[j]);
+      rgb(PALETTE[CU_COL[j]]);
       cx = t2x(CU_START[j]);
       cx >= mw_x && cx < mw_x + mw_w ? (
         gfx_line(cx, mw_y, cx, mw_y + mw_h - 1);
@@ -1306,7 +1499,7 @@ state == S_READY ? (
       );
       j += 1;
     );
-    drag_mode != 3 ? selected = drag_cue;
+    drag_mode != 3 ? select_only(drag_cue);
   );
   clicked && !learn_active && inside(ov_x, ov_y, ov_w, ov_h) ? drag_mode = 4;
 
@@ -1414,7 +1607,7 @@ button(bx, bar_y, bw, bh, "Mono", slider3 == 0) ? ( slider3 = 0; slider_automate
 button(bx, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate(slider3); ); bx += bw + 12;
 button(bx, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); ); bx += bw + 22;
 button(bx, bar_y, bw + 16, bh, "Lazy chop", slider5 == 1) ? ( slider5 = !slider5; slider_automate(slider5); ); bx += bw + 28;
-button(bx, bar_y, bw, bh, "Delete", 0) && selected >= 0 ? del_req = selected + 1;           // R11.1
+button(bx, bar_y, bw, bh, "Delete", 0) && sel_count() ? delsel_req = 1;                    // R11.1, R11.4
 bx += bw + 12;
 button(bx, bar_y, bw, bh, "Learn", learn_active) && !learn_active ? learn_req = 1;            // R20.2
 // right-aligned: Freeze, then a gap, then zoom out / in
@@ -1431,34 +1624,47 @@ button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 // (R17.9); Reverse toggles and Loop steps through its modes on a click.
 row_y = bar_y + bh + 10; row_h = 40; row_gap = 6;
 pw = floor((gfx_w - 2 * pad - 7 * row_gap) / 8);
-has_sel = selected >= 0 && CU_SET[selected] && state == S_READY;
+// Several selected cues all change together (R17.14).
+nsel = sel_count();
+has_sel = state == S_READY && nsel > 0 && selected >= 0;
 k = 0;
 loop(8,
   px0 = pad + k * (pw + row_gap);
   rgb(C_PANEL); gfx_rect(px0, row_y, pw, row_h);
-  has_sel ? ( rgb(PALETTE[selected]); gfx_rect(px0, row_y, pw, 2); );
+  has_sel ? ( rgb(nsel == 1 ? PALETTE[CU_COL[selected]] : C_TEXT); gfx_rect(px0, row_y, pw, 2); );
   rgb(C_DIM); text_at(px0 + 8, row_y + 6, param_label(k));
-  has_sel ? ( rgb(C_TEXT); text_at(px0 + 8, row_y + 22, param_text(k, selected)); )
+  has_sel ? ( rgb(C_TEXT); text_at(px0 + 8, row_y + 22, param_text(k, shown_val(k))); )
           : text_at(px0 + 8, row_y + 22, "-");
   clicked && has_sel && !learn_active && inside(px0, row_y, pw, row_h) ? (
-    mouse_cap & 16 ? reset_param(k, selected)
-    : k == 5 ? CU_REV[selected] = !CU_REV[selected]
-    : k == 6 ? CU_LOOP[selected] = (CU_LOOP[selected] + 1) % 4
-    : ( drag_mode = 5; drag_param_k = k; drag_y = mouse_y; key_acc = 0; );
+    v = shown_val(k);
+    q = 0;
+    loop(NPADS,
+      is_sel(q) ? (
+        mouse_cap & 16 ? reset_param(k, q)
+        : k == 5 ? CU_REV[q] = !v
+        : k == 6 ? CU_LOOP[q] = (v + 1) % 4;
+      );
+      q += 1;
+    );
+    !(mouse_cap & 16) && k != 5 && k != 6 ? ( drag_mode = 5; drag_param_k = k; drag_y = mouse_y; key_acc = 0; );
   );
   k += 1;
 );
-drag_mode == 5 && (mouse_cap & 1) && has_sel ? (
-  mouse_y != drag_y ? (
-    drag_param(drag_param_k, selected, (drag_y - mouse_y) * (mouse_cap & 4 ? 0.1 : 1));
-    drag_y = mouse_y;
-  );
+drag_mode == 5 && (mouse_cap & 1) && has_sel && mouse_y != drag_y ? (
+  dpx = (drag_y - mouse_y) * (mouse_cap & 4 ? 0.1 : 1);
+  drag_y = mouse_y;
+  // semitone steps (R17.8): collect pixels until a whole step is reached
+  key_acc += dpx;
+  n = key_acc > 0 ? floor(key_acc / 8) : -floor(-key_acc / 8);
+  key_acc -= n * 8;
+  q = 0; loop(NPADS, is_sel(q) ? drag_param(drag_param_k, q, dpx, n); q += 1);
 );
 pads_y = row_y + row_h + 12;
 gap = 8;
 ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
 ps = max(ps, 20);
 gfx_setfont(1, "Arial", 17);
+hover_pad = -1;
 p = 0;
 loop(NPADS,
   col = p % 4; row = 3 - floor(p / 4);
@@ -1467,15 +1673,28 @@ loop(NPADS,
   learn_active && learn_step == L_PADS ? (
     rgb(p < learn_count ? C_BTN_ON : C_PAD_EMPTY);
   ) : CU_SET[p] ? (
-    rgb(PALETTE[p]);
+    rgb(PALETTE[CU_COL[p]]);
     gfx_a = sounding ? 1 : 0.35;
   ) : (
     rgb(C_PAD_EMPTY);                                     // R11.5
   );
   gfx_rect(px, py, ps, ps);
   gfx_a = 1;
-  (learn_active && learn_step == L_PADS ? p == learn_count : p == selected) ? (
-    rgb(learn_active ? C_WARN : C_TEXT); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0);
+  // outlines: Learn's next pad; selected cues, the dial's cue twice; a drop target (R12.5)
+  inside(px, py, ps, ps) ? hover_pad = p;
+  learn_active && learn_step == L_PADS ? (
+    p == learn_count ? ( rgb(C_WARN); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); );
+  ) : pdrag_on && hover_pad == p && p != pdrag - 1 ? (
+    rgb(C_WARN); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); gfx_rect(px + 2, py + 2, ps - 4, ps - 4, 0);
+  ) : SEL[p] && CU_SET[p] ? (
+    rgb(C_TEXT); gfx_rect(px, py, ps, ps, 0);
+    p == selected ? gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0);
+  );
+  CU_SET[p] && !learn_active ? (
+    CU_FAV[p] ? ( rgb(sounding ? C_BG : C_TEXT); gfx_circle(px + ps - 11, py + 11, 4, 1); );   // R18.4
+    gfx_setfont(2, "Arial", 13); rgb(sounding ? C_BG : C_TEXT);
+    gfx_x = px + 8; gfx_y = py + ps - 20; gfx_drawstr(cue_name(p, #pn), 0, px + ps - 4, py + ps);   // R12.6, clipped to the pad
+    gfx_setfont(1, "Arial", 17);
   );
   learn_active && learn_step == L_PADS && p < learn_count ? (
     rgb(C_DIM); gfx_x = px + 8; gfx_y = py + ps - 20; gfx_drawstr(sprintf(#t, "note %d", LM_PAD[p]));
@@ -1483,10 +1702,57 @@ loop(NPADS,
   rgb(sounding ? C_BG : C_TEXT);
   gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0);
   clicked && !learn_active && inside(px, py, ps, ps) ? (
-    shift_held ? del_req = p + 1 : ( gfx_press = p + 1; mouse_pad = p + 1; );
+    shift_held ? del_req = p + 1                                       // R11.2
+    : mouse_cap & 4 ? sel_toggle(p)                                    // R18.1
+    : ( gfx_press = p + 1; mouse_pad = p + 1; pdrag = p + 1; pdrag_x = mouse_x; pdrag_y = mouse_y; pdrag_on = 0; pdrag_alt = 0; );
   );
   p += 1;
 );
 released && mouse_pad ? ( gfx_release = mouse_pad; mouse_pad = 0; );
+
+// Drag a pad onto another to move or swap, with Alt to copy (R12). Alt
+// counts if it is held at any point of the drag: the release itself does
+// not report the modifiers reliably.
+(mouse_cap & 1) && pdrag && !pdrag_on && CU_SET[pdrag - 1] && abs(mouse_x - pdrag_x) + abs(mouse_y - pdrag_y) > 8 ? pdrag_on = 1;
+(mouse_cap & 1) && pdrag && (mouse_cap & 16) ? pdrag_alt = 1;
+released ? (
+  pdrag_on && hover_pad >= 0 ? (
+    padop_from = pdrag - 1; padop_to = hover_pad; padop_copy = pdrag_alt; padop_req = 1;
+  );
+  pdrag = 0; pdrag_on = 0;
+);
+
+// side panel: selection, favourites, undo, rename
+gfx_setfont(2, "Arial", 13);
+sx = pad + 4 * ps + 3 * gap + 24; sy = pads_y; sw = 120; sh = 26;
+ready = state == S_READY && !learn_active;
+button(sx, sy, sw, sh, all_selected() ? "Clear selection" : "Select all", 0) && ready ? select_all();   // R18.2, R18.3
+button(sx, sy + 34, sw, sh, "Favourite", 0) && ready ? toggle_fav();                                     // R18.4
+button(sx, sy + 76, sw / 2 - 3, sh, "Undo", 0) && ready ? undo_req = 1;                                   // R19.1
+button(sx + sw / 2 + 3, sy + 76, sw / 2 - 3, sh, "Redo", 0) && ready ? redo_req = 1;                      // R19.2
+rgb(C_DIM); text_at(sx, sy + 108, sprintf(#t, "%d undo  /  %d redo", h_undo, h_redo));
+button(sx, sy + 136, sw, sh, "Rename", rename_on) && ready && has_sel && !rename_on ? (
+  rename_on = 1; rename_pad = selected; cue_name(selected, #rn);
+);
+rename_on ? (
+  // typed into the window; Enter keeps the name, Esc drops it (R12.6)
+  while ((c = gfx_getchar()) > 0 ? (
+    c == 13 ? ( CU_SET[rename_pad] ? name_set(rename_pad, #rn); rename_on = 0; )
+    : c == 27 ? rename_on = 0
+    : c == 8 ? ( strlen(#rn) > 0 ? str_setlen(#rn, strlen(#rn) - 1); )
+    : c >= 32 && c < 127 && strlen(#rn) < NAME_LEN - 1 ? ( sprintf(#kc, "%c", c); strcat(#rn, #kc); );
+    rename_on;
+  ) : 0);
+  rgb(C_PANEL); gfx_rect(sx, sy + 168, sw + 120, sh);
+  rgb(C_WARN); gfx_rect(sx, sy + 168, sw + 120, sh, 0);
+  rgb(C_TEXT); text_at(sx + 6, sy + 175, sprintf(#t, "%s_", #rn));
+  rgb(C_DIM); text_at(sx, sy + 200, "Enter keeps the name, Esc cancels.");
+) : (
+  rgb(C_DIM);
+  text_at(sx, sy + 172, "Cmd-click: select several");
+  text_at(sx, sy + 188, "Shift-click: delete");
+  text_at(sx, sy + 204, "Drag: move or swap, Alt-drag: copy");
+);
+mouse_down = mouse_cap & 1;      // undo waits for the end of a drag
 
 last_cap = mouse_cap;

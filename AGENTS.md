@@ -172,11 +172,16 @@ project rate (resample on playback, linear interpolation is fine for v1).
 - **Find samples** (R14): onset strength from the same onset envelope; take
   the N strongest (N = 4–16, default 16), sort by time, skip favourite pads.
   Same input → same output, no randomness.
-- **Undo** (R19): ring buffer of ≥ 100 cue-state snapshots in plugin memory;
-  not persisted.
+- **Undo** (R19): all cue state (numeric fields, favourite, colour, name)
+  is one contiguous block (`CUE_SIZE`), so a snapshot is one `memcpy` into a
+  ring of 128 (`HIST`). `@block` compares the cues with the current
+  snapshot; once a change has rested 0.4 s and no mouse button is down, it
+  becomes one step — a drag or a burst of dial ticks is one action. Not
+  persisted; a load or project restore starts a fresh history.
 - **Modifiers** (Terms: Modifier): Shift-click on a pad deletes (R11.2);
   in the parameter row Alt-click resets (R17.9) and Cmd/Ctrl-drag is fine
-  (R17.10). Copy and multi-select modifiers come with 5b.
+  (R17.10); Cmd/Ctrl-click on a pad adds or removes it from the selection
+  (R18.1); Alt held when a dragged pad is dropped copies (R12.3).
 - **Loops** (R17.19–17.27): at every seam the outgoing pass carries on past
   the boundary in a tail voice and fades out while the next pass fades in,
   over the cue's crossfade (at least the 2 ms ramp, so a crossfade of 0
