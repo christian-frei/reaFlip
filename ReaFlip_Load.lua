@@ -9,6 +9,9 @@ local PATH_MAX = 4000
 
 -- gmem layout shared with ReaFlip.jsfx
 local G_REQ, G_TOKEN, G_START, G_LEN, G_PATHLEN, G_PATH = 0, 1, 2, 3, 4, 16
+-- the last confirmed MIDI map: version, layout, pad channel, 16 pads,
+-- 29 x kind/number/encoding/channel; must match the plugin's MAP_LAYOUT
+local G_MAP, MAP_LAYOUT, MAP_SIZE = 8192, 2, 19 + 29 * 4
 
 local function fail(text)
   reaper.ShowMessageBox(text, NAME, 0)
@@ -39,21 +42,38 @@ local function resolve(item, take)
   return src, start, len
 end
 
-local function find_fx(track)
-  for _, name in ipairs(FX_NAMES) do
-    local fx = reaper.TrackFX_AddByName(track, name, false, 0)
-    if fx >= 0 then return fx end
-  end
+-- by file, not display name: the user may rename the instance
+local function is_reaflip(track, fx)
+  local ok, ident = reaper.TrackFX_GetNamedConfigParm(track, fx, "fx_ident")
+  return ok and ident:find(NAME .. ".jsfx", 1, true) ~= nil
 end
 
--- Reuse the instrument wherever it is (the track may have been renamed);
--- otherwise create it right below the item's track (R1.10).
-local function find_or_create(item)
+-- With several instances, load into the one whose window was used last if
+-- it is still open, else one with an open window, else the first (R1.16).
+-- The track may have been renamed, so instances are found by plugin.
+local function find_instance()
+  local rv, tnum, _, fx = reaper.GetFocusedFX2() -- retval, track, item, fx
+  if rv & 1 == 1 and tnum > 0 and fx < 0x1000000 then
+    local track = reaper.GetTrack(0, tnum - 1)
+    if track and is_reaflip(track, fx) then return track, fx end
+  end
+  local first_track, first_fx
   for i = 0, reaper.CountTracks(0) - 1 do
     local track = reaper.GetTrack(0, i)
-    local fx = find_fx(track)
-    if fx then return track, fx end
+    for f = 0, reaper.TrackFX_GetCount(track) - 1 do
+      if is_reaflip(track, f) then
+        if reaper.TrackFX_GetOpen(track, f) then return track, f end
+        if not first_track then first_track, first_fx = track, f end
+      end
+    end
   end
+  return first_track, first_fx
+end
+
+-- otherwise create it right below the item's track (R1.10)
+local function find_or_create(item)
+  local found, found_fx = find_instance()
+  if found then return found, found_fx end
   -- IP_TRACKNUMBER is 1-based, so inserting at it lands directly below
   local idx = math.floor(reaper.GetMediaTrackInfo_Value(reaper.GetMediaItem_Track(item), "IP_TRACKNUMBER"))
   reaper.InsertTrackAtIndex(idx, true)
@@ -92,7 +112,27 @@ local function send(track, fx, path, start, len)
   reaper.gmem_write(G_REQ, reaper.gmem_read(G_REQ) + 1)
 end
 
+-- The plugin can't write files, so a learned map lives in shared memory only
+-- until REAPER quits. Keep it in REAPER's saved settings and put it back on
+-- the first run after a restart, so new instances start with it (R20.14).
+local function sync_map()
+  reaper.gmem_attach(GMEM)
+  if reaper.gmem_read(G_MAP) > 0 and reaper.gmem_read(G_MAP + 1) == MAP_LAYOUT then
+    local v = {}
+    for i = 1, MAP_SIZE - 1 do v[i] = ("%d"):format(reaper.gmem_read(G_MAP + i)) end
+    reaper.SetExtState(NAME, "midi_map", table.concat(v, ","), true)
+  else
+    local v = {}
+    for n in reaper.GetExtState(NAME, "midi_map"):gmatch("[^,]+") do v[#v + 1] = tonumber(n) or 0 end
+    if #v == MAP_SIZE - 1 and v[1] == MAP_LAYOUT then
+      for i = 1, #v do reaper.gmem_write(G_MAP + i, v[i]) end
+      reaper.gmem_write(G_MAP, 1) -- version last: the map is complete
+    end
+  end
+end
+
 local function main()
+  sync_map()
   local count = reaper.CountSelectedMediaItems(0)
   if count == 0 then return fail("Select the audio item you want to load.") end -- R1.4
   if count > 1 then return fail("Select only one item to load.") end -- R1.5

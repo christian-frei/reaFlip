@@ -45,6 +45,30 @@ V_RELSET = V_ST + 320;            // cue release in seconds, used by Trigger mod
 VS_OFF = 0; VS_ATT = 1; VS_SUS = 2; VS_REL = 3; VS_PARK = 4;
 RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 
+// MIDI map. Learn steps double as control ids; step 0 is the 16 pads.
+// SHIFT + x steps exist because a controller may send other messages while
+// its Shift is held.
+L_PADS = 0; L_DIAL = 1; L_SHIFT = 2; L_SDIAL = 3; L_DELETE = 4; L_LEFT = 5; L_RIGHT = 6;
+L_DIALPRESS = 7; L_PLAY = 8; L_TRIG = 9; L_STRIPMODE = 10;
+L_ENC1 = 11; L_ENC1P = 15;        // encoders 1-4 turn: 11..14, press: 15..18
+L_UNDO = 19; L_REDO = 20; L_AUTOSET = 21; L_SAUTOSET = 22; L_FAV = 23; L_SFAV = 24;
+L_SELALL = 25; L_SSELALL = 26; L_NOTEREP = 27;
+L_STRIP = 28;                     // last: it sends a burst on the lightest touch
+NSTEPS = 29;
+K_NONE = 0; K_NOTE = 1; K_CC = 2; K_PB = 3;
+K_SAME = 4;                       // SHIFT + x sends what x sends: our own Shift state decides
+E_CENTER = 1; E_TWOS = 2; E_SIGNBIT = 3; E_ABS = 4;   // how a relative control encodes a turn
+M_PAD = 1760000; M_KIND = 1760020; M_NUM = 1760050; M_ENC = 1760080;    // active map
+LM_PAD = 1760110; LM_KIND = 1760130; LM_NUM = 1760160; LM_ENC = 1760190; // being learned
+REL_LAST = 1760220; LV = 1760250; // last absolute value per control; learn turn samples
+M_CHN = 1760280; LM_CHN = 1760310; // channel per control (1-16): controllers reuse note
+                                   // and CC numbers on different channels
+// confirmed map shared with new instances and, via the load action, with
+// REAPER's saved settings (R20.14): version (written last), layout, pad
+// channel, 16 pads, kind/num/enc/channel per step. A map with another layout
+// is ignored, so a changed step list never applies stale assignments.
+G_MAP = 8192; MAP_LAYOUT = 2; MAP_SIZE = 19 + NSTEPS * 4;
+
 // Source states. EMPTY is 0 so a new instance starts empty without @init
 // assigning state, which would wipe a loaded sample on a samplerate change.
 S_EMPTY = 0; S_LOADING = 1; S_PEAKS = 2; S_READY = 3; S_MISSING = 4;
@@ -384,6 +408,346 @@ function add_event(offset, p, vel)
   );
 );
 
+// ---- MIDI map, learn and SLAB controls ----
+
+function map_defaults() local(i)
+(
+  M_CH = 0;
+  i = 0; loop(NPADS, M_PAD[i] = i; i += 1);              // R20.1
+  memset(M_KIND, K_NONE, NSTEPS);
+);
+
+function gmem_has_map() ( gmem[G_MAP] > 0 && gmem[G_MAP + 1] == MAP_LAYOUT; );
+
+function map_from_gmem() local(i)
+(
+  M_CH = gmem[G_MAP + 2];
+  i = 0; loop(NPADS, M_PAD[i] = gmem[G_MAP + 3 + i]; i += 1);
+  i = 0; loop(NSTEPS,
+    M_KIND[i] = gmem[G_MAP + 19 + i * 4]; M_NUM[i] = gmem[G_MAP + 20 + i * 4];
+    M_ENC[i] = gmem[G_MAP + 21 + i * 4]; M_CHN[i] = gmem[G_MAP + 22 + i * 4];
+    i += 1;
+  );
+);
+
+function map_to_gmem() local(i)
+(
+  gmem[G_MAP + 1] = MAP_LAYOUT;
+  gmem[G_MAP + 2] = M_CH;
+  i = 0; loop(NPADS, gmem[G_MAP + 3 + i] = M_PAD[i]; i += 1);
+  i = 0; loop(NSTEPS,
+    gmem[G_MAP + 19 + i * 4] = M_KIND[i]; gmem[G_MAP + 20 + i * 4] = M_NUM[i];
+    gmem[G_MAP + 21 + i * 4] = M_ENC[i]; gmem[G_MAP + 22 + i * 4] = M_CHN[i];
+    i += 1;
+  );
+  gmem[G_MAP] += 1;              // written last: readers only trust a non-zero version
+);
+
+function step_kind(k)            // 0 pads, 1 turn (relative), 2 button, 3 strip
+(
+  k == L_PADS ? 0 : k == L_DIAL || k == L_SDIAL || (k >= L_ENC1 && k < L_ENC1 + 4) ? 1 : k == L_STRIP ? 3 : 2;
+);
+
+// the control a SHIFT + x step builds on, or -1
+function shift_base(k)
+(
+  k == L_SDIAL ? L_DIAL : k == L_SAUTOSET ? L_AUTOSET : k == L_SFAV ? L_FAV : k == L_SSELALL ? L_SELALL : -1;
+);
+
+function learn_name(k)
+(
+  k == L_DIAL ? "dial" : k == L_SHIFT ? "SHIFT" : k == L_SDIAL ? "SHIFT + dial" : k == L_DELETE ? "DELETE"
+  : k == L_LEFT ? "left arrow" : k == L_RIGHT ? "right arrow" : k == L_DIALPRESS ? "dial press"
+  : k == L_PLAY ? "PLAY" : k == L_TRIG ? "TRIGGER MODE" : k == L_STRIPMODE ? "STRIP MODE"
+  : k == L_STRIP ? "touch strip" : k == L_ENC1 ? "encoder 1" : k == L_ENC1 + 1 ? "encoder 2"
+  : k == L_ENC1 + 2 ? "encoder 3" : k == L_ENC1 + 3 ? "encoder 4" : k == L_ENC1P ? "encoder 1 press"
+  : k == L_ENC1P + 1 ? "encoder 2 press" : k == L_ENC1P + 2 ? "encoder 3 press" : k == L_ENC1P + 3 ? "encoder 4 press"
+  : k == L_UNDO ? "UNDO" : k == L_REDO ? "REDO" : k == L_AUTOSET ? "AUTO SET" : k == L_SAUTOSET ? "SHIFT + AUTO SET"
+  : k == L_FAV ? "FAVORITE" : k == L_SFAV ? "SHIFT + FAVORITE" : k == L_SELALL ? "SELECT ALL"
+  : k == L_SSELALL ? "SHIFT + SELECT ALL" : k == L_NOTEREP ? "NOTE REPEAT" : "pads";
+);
+
+function learn_error(text) ( strcpy(#learn_err, text); has_learn_err = 1; );
+
+function learn_start()
+(
+  learn_active = 1; learn_done = 0;
+  learn_step = 0; learn_count = 0; learn_phase = 0; g_on = 0;
+  memset(LM_PAD, -1, NPADS);
+  memset(LM_KIND, K_NONE, NSTEPS);
+  LM_CH = -1;
+  has_learn_err = 0;
+);
+
+function learn_next()
+(
+  learn_step += 1; learn_count = 0; learn_phase = 0; g_on = 0; has_learn_err = 0;
+  learn_step >= NSTEPS ? learn_done = 1;
+);
+
+function lm_is(i, kind, num, ch)
+(
+  LM_KIND[i] == kind && LM_CHN[i] == ch && (kind == K_PB || LM_NUM[i] == num);
+);
+
+// a control may only do one job (R20.3 for pads, same rule for the rest)
+function learn_used(kind, num, ch) local(i, used)
+(
+  used = 0;
+  kind == K_NOTE && (LM_CH == 0 || LM_CH == ch) ? ( i = 0; loop(NPADS, LM_PAD[i] == num ? used = 1; i += 1); );
+  i = 1; loop(NSTEPS - 1, lm_is(i, kind, num, ch) ? used = 1; i += 1);
+  used;
+);
+
+// Dropped without complaint: turn controls and the strip fire on the
+// lightest touch, and SHIFT is held on purpose during SHIFT + x steps.
+function learn_quiet(kind, num, ch) local(i, q, b)
+(
+  b = shift_base(learn_step);
+  q = b >= 0 && lm_is(L_SHIFT, kind, num, ch);
+  i = 1;
+  loop(NSTEPS - 1,
+    i != b && (step_kind(i) == 1 || step_kind(i) == 3) && lm_is(i, kind, num, ch) ? q = 1;
+    i += 1;
+  );
+  q;
+);
+
+// a SHIFT + x step that receives exactly what x sends needs no own control
+function learn_same(kind, num, ch) local(b)
+(
+  b = shift_base(learn_step);
+  b >= 0 && lm_is(b, kind, num, ch) ? ( LM_KIND[learn_step] = K_SAME; learn_next(); 1; ) : 0;
+);
+
+// Six values clockwise, then six counter-clockwise, tell the encoding
+// (R20.13); an unclear pattern asks for another turn (R20.6).
+function learn_infer() local(i, cw_hi, cw_lo, ccw_hi, ccw_lo, ccw_sum, mono, mode)
+(
+  cw_hi = cw_lo = ccw_hi = ccw_lo = 1; ccw_sum = 0;
+  i = 0;
+  loop(6,
+    LV[i] > 64 ? cw_lo = 0 : LV[i] < 64 && LV[i] > 0 ? cw_hi = 0 : ( cw_hi = 0; cw_lo = 0; );
+    LV[6 + i] > 64 ? ccw_lo = 0 : LV[6 + i] < 64 && LV[6 + i] > 0 ? ccw_hi = 0 : ( ccw_hi = 0; ccw_lo = 0; );
+    ccw_sum += LV[6 + i];
+    i += 1;
+  );
+  mono = 1;
+  i = 1; loop(5, LV[i] < LV[i - 1] || LV[6 + i] > LV[5 + i] ? mono = 0; i += 1);
+  mode = mono && LV[5] - LV[0] >= 3 && LV[6] - LV[11] >= 3 ? E_ABS
+    : cw_hi && ccw_lo ? E_CENTER
+    : cw_lo && ccw_hi ? ( ccw_sum / 6 > 96 ? E_TWOS : E_SIGNBIT )
+    : 0;
+  mode ? (
+    LM_KIND[learn_step] = K_CC; LM_ENC[learn_step] = mode;
+    learn_next();
+  ) : (
+    learn_error("Couldn't recognise that turn. Turn again: slowly clockwise first, then counter-clockwise.");
+    learn_count = 0; learn_phase = 0;
+  );
+);
+
+function learn_take(kind, num, ch)
+(
+  !learn_same(kind, num, ch) ? (
+    learn_used(kind, num, ch) ? learn_error("That control already has another job. Press the one asked for.") : (
+      LM_KIND[learn_step] = kind; LM_NUM[learn_step] = num; LM_CHN[learn_step] = ch;
+      learn_next();
+    );
+  );
+);
+
+function learn_midi(m1, m2, m3) local(st, ch, k, i, used, kind, press)
+(
+  st = m1 & 0xF0; ch = (m1 & 15) + 1;
+  k = step_kind(learn_step);
+  kind = st == 0x90 || st == 0x80 ? K_NOTE : st == 0xB0 ? K_CC : st == 0xE0 ? K_PB : K_NONE;
+  !learn_done && kind != K_NONE && !learn_quiet(kind, m2, ch) ? (
+    k == 0 ? (
+      st == 0x90 && m3 > 0 ? (                            // R20.2, R20.3
+        used = 0; i = 0;
+        loop(learn_count, LM_PAD[i] == m2 ? used = i + 1; i += 1);
+        used ? learn_error(sprintf(#learn_tmp, "That pad is already pad %d. Hit pad %d.", used, learn_count + 1)) : (
+          LM_PAD[learn_count] = m2;
+          learn_count == 0 ? LM_CH = ch : LM_CH != ch ? LM_CH = 0;   // mixed channels: accept any
+          learn_count += 1; has_learn_err = 0;
+          learn_count >= NPADS ? learn_next();
+        );
+      );
+    ) : k == 1 ? (
+      kind == K_CC ? (                                    // R20.4
+        learn_count == 0 && learn_phase == 0 ? (
+          !learn_same(kind, m2, ch) ? (
+            learn_used(K_CC, m2, ch) ? learn_error("That control already has another job. Turn the one asked for.")
+            : ( LM_NUM[learn_step] = m2; LM_CHN[learn_step] = ch; LV[0] = m3; learn_count = 1; has_learn_err = 0; );
+          );
+        ) : m2 == LM_NUM[learn_step] && ch == LM_CHN[learn_step] ? (
+          LV[learn_phase * 6 + learn_count] = m3;
+          learn_count += 1;
+          learn_count >= 6 ? ( learn_phase == 0 ? ( learn_phase = 1; learn_count = 0; ) : learn_infer(); );
+        );
+      );
+    ) : k == 2 ? (
+      // R20.7. Taken on release: touch-sensitive encoders send a touch note
+      // first, then the press, so the last other control pressed while the
+      // first is held wins. Releasing either one ends the gesture, so a
+      // stray message without a release can't block the step.
+      kind != K_PB ? (
+        press = m3 > 0 && st != 0x80;
+        press ? (
+          !g_on ? ( g_on = 1; g_kind = kind; g_num = m2; g_ch = ch; c_kind = kind; c_num = m2; c_ch = ch; )
+          : kind != g_kind || m2 != g_num || ch != g_ch ? ( c_kind = kind; c_num = m2; c_ch = ch; );
+        ) : g_on && ((kind == g_kind && m2 == g_num && ch == g_ch) || (kind == c_kind && m2 == c_num && ch == c_ch)) ? (
+          g_on = 0;
+          learn_take(c_kind, c_num, c_ch);
+        );
+      );
+    ) : (
+      kind == K_CC || kind == K_PB ? learn_take(kind, m2, ch);
+    );
+  );
+);
+
+function learn_confirm() local(i)
+(
+  M_CH = max(LM_CH, 0);
+  i = 0; loop(NPADS, M_PAD[i] = LM_PAD[i]; i += 1);
+  i = 0; loop(NSTEPS, M_KIND[i] = LM_KIND[i]; M_NUM[i] = LM_NUM[i]; M_ENC[i] = LM_ENC[i]; M_CHN[i] = LM_CHN[i]; i += 1);
+  memset(REL_LAST, -1, NSTEPS);
+  map_to_gmem();                 // R20.9, R20.14
+  learn_active = 0;
+  strcpy(#slab_msg, "Learned controls saved.");
+);
+
+function say(text) ( strcpy(#slab_msg, text); );
+
+function later(k) ( sprintf(#slab_msg, "%s: comes with slice 5.", learn_name(k)); );
+
+function rel_delta(k, v) local(d)
+(
+  M_ENC[k] == E_CENTER ? v - 64
+  : M_ENC[k] == E_TWOS ? ( v < 64 ? v : v - 128 )
+  : M_ENC[k] == E_SIGNBIT ? ( v < 64 ? v : -(v - 64) )
+  : (
+    d = REL_LAST[k] < 0 ? 0 : v - REL_LAST[k];
+    REL_LAST[k] = v;
+    d;
+  );
+);
+
+// one step = 1/100 of the main waveform's span (Terms); the window keeps
+// step_len current, a closed window falls back to the whole section
+function edit_step() ( step_len > 0 ? step_len : sec_len / 100; );
+
+// Cue edits shared by mouse and dial: R10.7-R10.9, first end at the
+// implied end (R10.15), ends may pass the next cue (R10.16).
+function set_start(p, t)
+(
+  t = min(t, (CU_END[p] >= 0 ? CU_END[p] : sec_len) - edit_step());
+  CU_START[p] = max(0, t);
+);
+
+function set_end(p, t)
+(
+  CU_END[p] < 0 ? CU_END[p] = cue_end(p);
+  CU_END[p] = max(min(sec_len, t), CU_START[p] + edit_step());
+);
+
+function nudge_time(t, d) local(sz)
+(
+  sz = t < 0.1 ? 0.002 : t < 1 ? 0.02 : 0.2;
+  max(0, min(10, t + d * sz));   // R17.2, R17.3 range, held at the limits (R17.17)
+);
+
+function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );
+
+function slab_control(k, val) local(d, i, pr)
+(
+  step_kind(k) == 1 ? (
+    d = rel_delta(k, val);
+    k == L_DIAL || k == L_SDIAL ? (
+      has_target() ? (
+        slab_shift || k == L_SDIAL ? set_end(selected, cue_end(selected) + d * edit_step())   // R10.4
+                                   : set_start(selected, CU_START[selected] + d * edit_step()); // R10.3
+      );
+    ) : (
+      i = k - L_ENC1;
+      i == 3 ? later(k) : has_target() ? (
+        i == 0 ? CU_ATT[selected] = nudge_time(CU_ATT[selected], d)         // R21.2
+        : i == 1 ? CU_REL[selected] = nudge_time(CU_REL[selected], d)       // R21.3
+        : CU_LEVEL[selected] = max(-12, min(12, CU_LEVEL[selected] + d * 0.5));  // R21.4
+      );
+    );
+  ) : k == L_STRIP ? (
+    strip_mode == 1 ? (
+      has_target() ? CU_LEVEL[selected] = -12 + 24 * val / 127;              // R21.18
+    ) : say(strip_mode == 0 ? "Touch strip filter: comes with slice 5." : "Touch strip crossfade: comes with slice 5.");
+  ) : (
+    pr = val > 0;
+    k == L_SHIFT ? slab_shift = pr
+    : k == L_DELETE ? slab_delete = pr
+    : pr ? (
+      k == L_DIALPRESS || k == L_PLAY ? (                                    // R21.1, R21.15
+        state == S_READY ? ( src_playing ? src_stop() : src_start(ph); );
+      ) : k == L_TRIG ? (
+        slider2 = !slider2; slider_automate(slider2);                        // R21.14
+      ) : (k == L_FAV && slab_shift) || k == L_SFAV ? (
+        slider3 = !slider3; slider_automate(slider3);                        // R21.12
+      ) : k == L_STRIPMODE ? (
+        strip_mode = (strip_mode + 1) % 3;                                   // R21.16
+        say(strip_mode == 0 ? "Touch strip: filter" : strip_mode == 1 ? "Touch strip: pad level" : "Touch strip: loop crossfade");
+      ) : k >= L_ENC1P && k < L_ENC1P + 4 ? (
+        i = k - L_ENC1P;                                                     // R21.6
+        i == 3 ? later(k) : has_target() ? (
+          i == 0 ? CU_ATT[selected] = 0 : i == 1 ? CU_REL[selected] = 0 : CU_LEVEL[selected] = 0;
+        );
+      ) : k == L_LEFT || k == L_RIGHT ? (
+        say("Arrows need the beatgrid: comes with slice 5.");
+      ) : later(k);
+    );
+  );
+);
+
+// Route one incoming message; returns 0 when nothing here uses it, so the
+// caller passes it on (R20.12). Learned controls match their exact channel
+// and go first, so a button sharing a pad's note on another channel is
+// never a pad. Pads listen on the pads' channel only (R20.11).
+function route_midi(offset, m1, m2, m3) local(st, ch, i, k, val, hit)
+(
+  st = m1 & 0xF0; ch = (m1 & 15) + 1;
+  hit = 0;
+  k = 1;
+  loop(NSTEPS - 1,
+    !hit && M_KIND[k] != K_NONE && (M_CHN[k] == 0 || M_CHN[k] == ch) ? (
+      M_KIND[k] == K_NOTE && (st == 0x90 || st == 0x80) && m2 == M_NUM[k] ? ( hit = 1; slab_control(k, st == 0x90 ? m3 : 0); )
+      : M_KIND[k] == K_CC && st == 0xB0 && m2 == M_NUM[k] ? ( hit = 1; slab_control(k, m3); )
+      : M_KIND[k] == K_PB && st == 0xE0 ? ( hit = 1; slab_control(k, (m3 * 128 + m2) / 16383 * 127); );
+    );
+    k += 1;
+  );
+  !hit && (st == 0x90 || st == 0x80) && (M_CH == 0 || ch == M_CH) ? (
+    i = 0;
+    loop(NPADS,
+      !hit && M_PAD[i] == m2 ? (
+        hit = 1;
+        val = st == 0x90 ? m3 : 0;                        // note-on with velocity 0 is a release
+        slab_delete && val > 0 ? ( state == S_READY ? delete_cue(i); )   // R11.3
+        : add_event(offset, i, val);
+      );
+      i += 1;
+    );
+  );
+  hit;
+);
+
+// a new instance takes the last confirmed map, else the defaults (R20.14);
+// a saved project's own map arrives later through @serialize
+!map_init ? (
+  gmem_has_map() ? map_from_gmem() : map_defaults();
+  memset(REL_LAST, -1, NSTEPS);
+  map_init = 1;
+);
+
 @block
 gmem[G_REQ] != last_req ? (
   last_req = gmem[G_REQ];
@@ -414,6 +778,19 @@ state == S_READY ? (                                      // R6.7: ignored witho
 );
 play_req = 0; seek_req = 0; del_req = 0;
 
+// Learn (R20): start, skip an optional step, cancel, confirm
+learn_req == 1 ? (
+  all_voices_off();              // their note-offs would go to Learn instead
+  learn_start();
+) : learn_req == 2 ? (
+  learn_active && !learn_done && learn_step > L_DIAL ? learn_next();   // pads and dial are required
+) : learn_req == 3 ? (
+  learn_active = 0;              // R20.10: the old mapping was never touched
+) : learn_req == 4 ? (
+  learn_active && learn_done ? learn_confirm();
+);
+learn_req = 0;
+
 // Pad events are queued with their sample offset and fired in @sample, so
 // finger drumming keeps its timing inside the block. Mouse clicks go first.
 ev_n = 0; ev_i = 0; smp = 0;
@@ -422,13 +799,8 @@ gfx_release ? ( add_event(0, gfx_release - 1, 0); gfx_release = 0; );
 while (midirecv(offset, msg1, msg2, msg3) ? (
   // shown in the window: tells at a glance whether and what a controller sends
   mon_1 = msg1; mon_2 = msg2; mon_3 = msg3; mon_count += 1;
-  status = msg1 & 0xF0;
-  pad = msg2;                                             // notes 0..15 = pads 1..16 (R20.1)
-  pad >= 0 && pad < NPADS && (status == 0x90 || status == 0x80) ? (
-    add_event(offset, pad, status == 0x90 ? msg3 : 0);    // note-on with velocity 0 is a release
-  ) : (
-    midisend(offset, msg1, msg2, msg3);                   // R20.12: pass on what we don't use
-  );
+  learn_active ? learn_midi(msg1, msg2, msg3)            // Learn takes everything
+  : !route_midi(offset, msg1, msg2, msg3) ? midisend(offset, msg1, msg2, msg3);   // R20.12
   1;
 ) : 0);
 
@@ -513,7 +885,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 2 ? (
+  ser_ver >= 1 && ser_ver <= 5 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -526,6 +898,24 @@ file_avail(0) >= 0 ? (
         i += 1;
       );
     );
+    ser_ver >= 5 ? (                                      // R20.9
+      file_var(0, M_CH);
+      i = 0; loop(NPADS, file_var(0, M_PAD[i]); i += 1);
+      i = 0;
+      loop(NSTEPS,
+        file_var(0, M_KIND[i]); file_var(0, M_NUM[i]); file_var(0, M_ENC[i]); file_var(0, M_CHN[i]);
+        i += 1;
+      );
+      memset(REL_LAST, -1, NSTEPS);
+      map_init = 1;
+      // after a restart, a project's learned map is the default for new
+      // instances too, even before the load action has run (R20.14)
+      !gmem_has_map() ? map_to_gmem();
+    ) : ser_ver >= 3 ? (
+      // test builds with other step ids: read past, keep the current map
+      file_var(0, ser_skip);
+      loop(NPADS + 25 * (ser_ver == 4 ? 4 : 3), file_var(0, ser_skip));
+    );
     ser_has ? (
       // undo restores run this too: only reload when the source really changed
       !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
@@ -537,7 +927,7 @@ file_avail(0) >= 0 ? (
     ) : has_source ? eject();
   );
 ) : (
-  ser_ver = 2;
+  ser_ver = 5;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -548,6 +938,13 @@ file_avail(0) >= 0 ? (
   loop(NPADS,
     file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
     file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
+    i += 1;
+  );
+  file_var(0, M_CH);
+  i = 0; loop(NPADS, file_var(0, M_PAD[i]); i += 1);
+  i = 0;
+  loop(NSTEPS,
+    file_var(0, M_KIND[i]); file_var(0, M_NUM[i]); file_var(0, M_ENC[i]); file_var(0, M_CHN[i]);
     i += 1;
   );
 );
@@ -714,7 +1111,7 @@ state == S_READY ? (
   cx >= mw_x && cx < mw_x + mw_w ? ( gfx_line(cx, mw_y, cx, mw_y + mw_h - 1); gfx_line(cx + 1, mw_y, cx + 1, mw_y + mw_h - 1); );
 
   // mouse down: handle drag, scrub, or overview seek
-  clicked && inside(mw_x, mw_y, mw_w, mw_h) ? (
+  clicked && !learn_active && inside(mw_x, mw_y, mw_w, mw_h) ? (
     drag_mode = 3;                                        // scrub unless a handle is hit (R6.3)
     j = 0;
     loop(NPADS,
@@ -726,20 +1123,12 @@ state == S_READY ? (
     );
     drag_mode != 3 ? selected = drag_cue;
   );
-  clicked && inside(ov_x, ov_y, ov_w, ov_h) ? drag_mode = 4;
+  clicked && !learn_active && inside(ov_x, ov_y, ov_w, ov_h) ? drag_mode = 4;
 
   (mouse_cap & 1) && drag_mode ? (
-    drag_mode == 1 ? (
-      // R10.1 with R10.7 and R10.9
-      t = max(0, x2t(mouse_x));
-      t = min(t, (CU_END[drag_cue] >= 0 ? CU_END[drag_cue] : sec_len) - step_len);
-      CU_START[drag_cue] = max(0, t);
-    ) : drag_mode == 2 ? (
-      CU_END[drag_cue] < 0 ? CU_END[drag_cue] = cue_end(drag_cue);   // R10.15
-      // R10.2 with R10.8, R10.9; may pass the next cue's start (R10.16)
-      t = min(sec_len, x2t(mouse_x));
-      CU_END[drag_cue] = max(t, CU_START[drag_cue] + step_len);
-    ) : drag_mode == 3 ? (
+    drag_mode == 1 ? set_start(drag_cue, x2t(mouse_x))   // R10.1
+    : drag_mode == 2 ? set_end(drag_cue, x2t(mouse_x))   // R10.2
+    : drag_mode == 3 ? (
       seek_pos = max(0, min(sec_len, x2t(mouse_x))) * fsr; seek_req = 1;
     ) : drag_mode == 4 ? (
       seek_pos = max(0, min(1, (mouse_x - ov_x) / ov_w)) * sec_len * fsr; seek_req = 1;   // R6.4
@@ -764,6 +1153,54 @@ state == S_READY ? (
 );
 released ? drag_mode = 0;
 
+learn_active ? (
+  rgb(C_PANEL); gfx_rect(mw_x, mw_y, mw_w, mw_h);
+  rgb(C_WARN); gfx_rect(mw_x, mw_y, mw_w, mw_h, 0);
+  lx = mw_x + 16; ly = mw_y + 12;
+  button(mw_x + mw_w - 86, mw_y + 10, 76, 26, "Cancel", 0) ? learn_req = 3;
+  learn_done ? (
+    // summary of everything learned (R20.8)
+    button(mw_x + mw_w - 170, mw_y + 10, 76, 26, "Confirm", 1) ? learn_req = 4;
+    rgb(C_TEXT); text_at(lx, ly, sprintf(#t, "Learn done. Pads: notes %d..%d, channel %s.", LM_PAD[0], LM_PAD[15],
+      LM_CH > 0 ? sprintf(#t2, "%d", LM_CH) : "any"));
+    k = 1;
+    loop(NSTEPS - 1,
+      cx = lx + floor((k - 1) / 10) * 290; cy = ly + 20 + ((k - 1) % 10) * 13;
+      rgb(LM_KIND[k] ? C_TEXT : C_DIM);
+      text_at(cx, cy, sprintf(#t, "%s: %s", learn_name(k),
+        LM_KIND[k] == K_NOTE ? sprintf(#t2, "note %d ch %d", LM_NUM[k], LM_CHN[k])
+        : LM_KIND[k] == K_PB ? sprintf(#t2, "pitch bend ch %d", LM_CHN[k])
+        : LM_KIND[k] == K_CC ? sprintf(#t2, "CC %d ch %d%s", LM_NUM[k], LM_CHN[k],
+            LM_ENC[k] == E_CENTER ? " (64 +/- n)" : LM_ENC[k] == E_TWOS ? " (twos)"
+            : LM_ENC[k] == E_SIGNBIT ? " (sign bit)" : LM_ENC[k] == E_ABS ? " (absolute)" : "")
+        : LM_KIND[k] == K_SAME ? "same as without SHIFT" : "skipped"));
+      k += 1;
+    );
+  ) : (
+    learn_step > L_DIAL ? ( button(mw_x + mw_w - 170, mw_y + 10, 76, 26, "Skip", 0) ? learn_req = 2; );
+    rgb(C_DIM); text_at(lx, ly, sprintf(#t, "Learn  -  step %d of %d", learn_step + 1, NSTEPS));
+    gfx_setfont(1, "Arial", 17); rgb(C_TEXT);
+    kk = step_kind(learn_step);
+    kb = shift_base(learn_step);
+    kk == 0 ? sprintf(#t, "Hit pad %d on the controller.", learn_count + 1)
+    : kk == 1 ? (
+      sprintf(#t, learn_phase == 0 ? "%s %s slowly clockwise (%d of 6)." : "%s %s slowly counter-clockwise (%d of 6).",
+        kb >= 0 ? "Hold SHIFT and turn" : learn_phase == 0 ? "Turn" : "Now turn",
+        learn_step == L_DIAL || learn_step == L_SDIAL ? "the dial" : learn_name(learn_step), learn_count);
+    )
+    : learn_step == L_DIALPRESS ? strcpy(#t, "Press the dial down.")
+    : learn_step >= L_ENC1P && learn_step < L_ENC1P + 4 ? sprintf(#t, "Press encoder %d down (a touch is not enough).", learn_step - L_ENC1P + 1)
+    : kk == 2 ? sprintf(#t, kb >= 0 ? "Hold SHIFT and press %s." : "Press %s.", learn_name(kb >= 0 ? kb : learn_step))
+    : strcpy(#t, "Slide a finger along the touch strip.");
+    text_at(lx, ly + 34, #t);
+    gfx_setfont(2, "Arial", 13); rgb(C_DIM);
+    text_at(lx, ly + 62, learn_step <= L_DIAL ? "Required."
+      : kb >= 0 ? "If it sends the same as without SHIFT, that is fine. Skip it if there is no such combination."
+      : "Skip it if your controller has no such control.");
+    has_learn_err ? ( rgb(C_ERR); text_at(lx, ly + 90, #learn_err); );
+  );
+);
+
 info_y = mw_y + mw_h + 6;
 has_err ? ( rgb(C_ERR); text_at(pad, info_y, #err); );
 
@@ -779,7 +1216,7 @@ mon_count ? (
 ) : text_at(gfx_w - pad - 330, info_y, "Last MIDI: nothing received yet");
 
 // controls; mode changes go through slider_automate so REAPER records them
-bar_y = info_y + 22; bw = 70; bh = 26; bx = pad;
+bar_y = info_y + 22; bw = 64; bh = 26; bx = pad;
 button(bx, bar_y, bw, bh, src_playing ? "Pause" : "Play", src_playing) ? play_req = 1;      // R6.1, R6.2
 bx += bw + 12;
 button(bx, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); ); bx += bw;
@@ -789,6 +1226,8 @@ button(bx, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate
 button(bx, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); ); bx += bw + 22;
 button(bx, bar_y, bw + 16, bh, "Lazy chop", slider5 == 1) ? ( slider5 = !slider5; slider_automate(slider5); ); bx += bw + 28;
 button(bx, bar_y, bw, bh, "Delete", 0) && selected >= 0 ? del_req = selected + 1;           // R11.1
+bx += bw + 12;
+button(bx, bar_y, bw, bh, "Learn", learn_active) && !learn_active ? learn_req = 1;            // R20.2
 // right-aligned: Freeze, then a gap, then zoom out / in
 bx = gfx_w - pad - 70;
 button(bx, bar_y, 70, bh, "Freeze", freeze) ? freeze = !freeze;                               // R7.7
@@ -798,7 +1237,15 @@ button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 
 // 4x4 pads, pad 1 bottom-left like the hardware; lit while sounding (R15.2),
 // outlined when selected (R15.3). Shift-click deletes (R11.2).
-pads_y = bar_y + bh + 14;
+row_y = bar_y + bh + 10;
+rgb(C_DIM);
+selected >= 0 && CU_SET[selected] ? (
+  text_at(pad, row_y, sprintf(#t, "Pad %d   level %+.1f dB   attack %.3f s   release %.3f s",
+    selected + 1, CU_LEVEL[selected], CU_ATT[selected], CU_REL[selected]));
+) : text_at(pad, row_y, "No cue selected");
+text_at(pad + 420, row_y, sprintf(#t, "Strip: %s", strip_mode == 0 ? "filter" : strip_mode == 1 ? "pad level" : "crossfade"));
+rgb(C_TEXT); text_at(pad + 540, row_y, #slab_msg);
+pads_y = row_y + 24;
 gap = 8;
 ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
 ps = max(ps, 20);
@@ -808,7 +1255,9 @@ loop(NPADS,
   col = p % 4; row = 3 - floor(p / 4);
   px = pad + col * (ps + gap); py = pads_y + row * (ps + gap);
   sounding = V_ST[p] != VS_OFF && V_ST[p] != VS_PARK;
-  CU_SET[p] ? (
+  learn_active && learn_step == L_PADS ? (
+    rgb(p < learn_count ? C_BTN_ON : C_PAD_EMPTY);
+  ) : CU_SET[p] ? (
     rgb(PALETTE[p]);
     gfx_a = sounding ? 1 : 0.35;
   ) : (
@@ -816,10 +1265,15 @@ loop(NPADS,
   );
   gfx_rect(px, py, ps, ps);
   gfx_a = 1;
-  p == selected ? ( rgb(C_TEXT); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); );
+  (learn_active && learn_step == L_PADS ? p == learn_count : p == selected) ? (
+    rgb(learn_active ? C_WARN : C_TEXT); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0);
+  );
+  learn_active && learn_step == L_PADS && p < learn_count ? (
+    rgb(C_DIM); gfx_x = px + 8; gfx_y = py + ps - 20; gfx_drawstr(sprintf(#t, "note %d", LM_PAD[p]));
+  );
   rgb(sounding ? C_BG : C_TEXT);
   gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0);
-  clicked && inside(px, py, ps, ps) ? (
+  clicked && !learn_active && inside(px, py, ps, ps) ? (
     shift_held ? del_req = p + 1 : ( gfx_press = p + 1; mouse_pad = p + 1; );
   );
   p += 1;

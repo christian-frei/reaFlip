@@ -3,8 +3,8 @@ feature: slab-sampler
 title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-10-22
-revision: 5
+date: 2026-10-23
+revision: 6
 status: ready
 ---
 
@@ -68,6 +68,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R1.13 — The system shall set the maximum length as 18 seconds at 44.1 kHz stereo, scaled in proportion to the file's sample rate and channel count (for example 36 seconds for 44.1 kHz mono or 22.05 kHz stereo).
 - R1.14 — If the selected item plays its file reversed, then the system shall load the section in the file's original direction.
 - R1.15 — If the file has more than two channels, then the system shall refuse the load with a message saying so.
+- R1.16 — When the producer loads the selected media item and the project has more than one instrument, the system shall load into the instrument whose window was used last if it is still open, else into one with an open window, else into the first. _(why: a second instance added by hand must be reachable without removing the first)_
 
 ### R2: Swap the source
 - R2.1 — When the producer loads a source into an instance that already has one, the system shall replace the source and keep every cue with its start, end and parameters.
@@ -281,6 +282,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R20.8 — When the producer skips an optional step, the system shall leave that function unassigned.
 - R20.9 — When the producer confirms the learned result, the system shall use it in this instance.
 - R20.14 — When the producer confirms the learned result, the system shall use it as the default for new instances.
+- R20.15 — When the producer learns a Shift combination (Shift + dial, Auto Set, Favourite, Select All) and the controller sends the same message as without Shift, the system shall use the learned Shift control to tell the two apart. _(why: some controllers change what a control sends while Shift is held, others don't)_
 - R20.10 — When the producer cancels learning, the system shall restore the previous assignment.
 - R20.11 — While a MIDI channel is set, the system shall ignore SLAB messages on other channels.
 - R20.12 — The system shall pass on every MIDI message it does not use, unchanged.
@@ -372,3 +374,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r3 — minimum cue length = one step at current zoom (Terms); defaults Slicer 1 beat, Find samples 16 (R13.8, R14.9); loop crossfade up to cue length (R17.25, R17.27); loop direction follows the playing direction, reverse flips it (R17.20–R17.22 changed, R17.26 added); export dropped; Q7, Q9, Q10, Q12 resolved; status ready.
 - r4 — name decided: ReaFlip (title, Context, Terms: Instance); Q13 resolved.
 - r5 — default pad notes 0–15, as SLAB sends them (R20.1 changed); Q1 narrowed to the non-pad controls.
+- r6 — load target with several instances (R1.16 added); Shift combinations learned on their own (R20.15 added).

@@ -78,8 +78,9 @@ this. Split the JSFX with `import` only if one file becomes hard to read.
    - Extension must be WAV or AIFF (R1.9). Channels 1 or 2 (R1.15).
    - Length budget check (R1.8, R1.13), see Memory below — refuse here with
      the maximum for this file's rate/channels, before touching the project.
-3. Find the instrument track by name; create it below the item's track if
-   missing, add the JSFX (`TrackFX_AddByName(track, "JS:<desc name>", false, 1)`)
+3. Find the instance (R1.16: last-used open window, else any open window,
+   else the first; matched by `fx_ident`, not by name); create a track below
+   the item's track if there is none, add the JSFX (`TrackFX_AddByName(track, "JS:<desc name>", false, 1)`)
    (R1.10).
 4. Make it live-ready: arm, input = all MIDI inputs / all channels,
    monitoring on, select it (R1.11).
@@ -192,6 +193,29 @@ the defaults above. Learn infers dial encoding from the value pattern:
 near 64 ± n → `relative_center`; 1–3 / 125–127 → `relative_twos`;
 1–3 / 65–67 → `relative_signbit`; monotonic 0–127 sweep → `absolute`.
 Function assignments are in R21.
+
+**Seen with Learn on the real SLAB (2026-10-23, General mode):** pads notes
+0–15 on ch 8; dial CC 60 ch 1, encoders 1–4 CC 16–19 ch 1, all sign-bit
+encoded; encoders are touch-sensitive (touch = note 24–27 ch 1, press = note
+32–35 ch 1, then touch notes again until release); SHIFT note 70 ch 1;
+touch strip CC 14 or 16 ch 7 (two runs differed). Buttons are spread over
+ch 1 and ch 7 with shared note numbers (DELETE and PLAY are both note 94).
+With SHIFT held the SLAB sends other messages (hence R20.15): dial CC 61,
+AUTO SET / FAVORITE / SELECT ALL their note + 1 (81, 83, 97 ch 7).
+
+**Where the map lives (R20.9, R20.14):** each instance keeps its own map in
+`@serialize`. Confirming Learn also writes the map to gmem (`G_MAP` = 8192:
+version written last, layout id, pad channel, 16 pads,
+kind/number/encoding/channel per Learn step). Controls match their exact
+channel, since controllers reuse note numbers across channels. Bump
+`MAP_LAYOUT` in both files whenever the Learn step list changes, so stale
+maps are ignored. New instances in the same REAPER session start with the
+gmem map; an instance restoring a map from a project also publishes it when
+gmem has none. JSFX can't write
+files, so `ReaFlip_Load.lua` copies the gmem map into ExtState
+(`ReaFlip/midi_map`, persisted) on each run, and after a restart puts it back
+into gmem. After a restart a learned map is the default again once the load
+action has run, or once a project with a learned instance is opened.
 
 ## Constraints & conventions
 
