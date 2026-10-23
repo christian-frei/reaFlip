@@ -182,7 +182,7 @@ SLAB runs in **General** (standard MIDI) mode (C3). Defaults until learned:
 
 | Setting | Default | Notes |
 |---|---|---|
-| `pad_notes` | 36..51 | pads 1–16 (R20.1); SLAB can change these via PAD CODE CHANGE |
+| `pad_notes` | 0..15 | pads 1–16 (R20.1) — what SLAB sends from its default bank (tested); other controllers use Learn |
 | `midi_channel` | 0 = any | 1–16 filters (R20.11) |
 | `dial` | unset | CC + encoding: `relative_center`, `relative_twos`, `relative_signbit`, `absolute` |
 | `shift`, `delete`, arrows, buttons, encoders 1–4 + presses, touch strip, strip mode | unset | learned (R20.7); unlearned functions are ignored (R21.24) |
@@ -229,10 +229,10 @@ groups it covers, e.g. `Slice 1: load section, waveform, persistence (R1–R5, R
 | Slice | Scope | Requirement groups |
 |---|---|---|
 | 1 Load | Lua helper with all checks, track creation, live-ready; JSFX loading with progress, overview waveform, persistence and reload, missing file | R1, R3, R4.3, R5, R7.1, R22 |
-| 2 Play | 16 pads by mouse and MIDI notes 36–51, Hold/Trigger, Mono/Poly, click-free ramps, velocity; **temporary** 16 even cues on a fresh load (`temp_even_cues`, breaks R1.3 — remove in slice 3) | R15, R16, R17.11–17.12, R17.18 |
-| 3 Chop | lazy chop, cue handles, main waveform with zoom/freeze, scrub, delete, Slicer, cues kept and clamped on swap | R2, R6, R7, R9, R10, R11, R13 |
-| 4 SLAB | Learn, dial start / Shift+dial end, arrows, app buttons, encoders, touch strip | R20, R21 |
-| 5 Rest | cue parameters, loops, beatgrid + analysis, Find samples, selection, favourites, undo, move/copy/rename | R4, R8, R12, R14, R17, R18, R19 |
+| 2 Play | 16 pads by mouse and MIDI notes, Hold/Trigger, Mono/Poly, click-free ramps, velocity; **temporary** 16 even cues on a fresh load (`temp_even_cues`, breaks R1.3 — remove in slice 3) | R15, R16, R17.11–17.12, R17.18 |
+| 3 Chop | source player (play/pause, seek, scrub), lazy chop, main waveform with zoom/freeze, cue handles, delete, cues kept and clamped on swap; removes the temporary even cues | R2, R6.1–6.4, R6.7, R7, R9, R10.1–10.2, R10.7–10.9, R10.14–10.16, R11.1–11.2, R11.5–11.7 |
+| 4 SLAB | Learn, dial start / Shift+dial end, arrows, Delete+pad, app buttons, encoders, touch strip | R10.3–10.6, R11.3, R20, R21 |
+| 5 Rest | beatgrid + analysis, BPM display, Quantize, Slicer (needs the grid), cue parameters, loops, Find samples, selection, favourites, undo, move/copy/rename | R4, R6.5–6.6, R8, R10.10–10.12, R10.17, R11.4, R12, R13, R14, R17, R18, R19 |
 
 The remote is on GitHub (repo URL supplied by the user); push after each
 tested slice. The repo stays private until the distribution section below

@@ -10,6 +10,7 @@ slider1:0<0,1000000,1>-load token
 slider2:0<0,1,1{Hold,Trigger}>Cue play mode
 slider3:0<0,1,1{Mono,Poly}>Voice mode
 slider4:1<0,1,1{Off,On}>Velocity
+slider5:1<0,1,1{Off,On}>Lazy chop
 
 in_pin:none
 out_pin:Left
@@ -28,17 +29,19 @@ BUDGET = 1587600;                 // 18 s x 44.1 kHz x 2 ch in sample values (C5
 BUF = 0;
 SCRATCH = 1600000;                // discard area while reading up to the section start
 CHUNK = 65536;                    // values per block; verified dropout-free in the probe
-PEAKS = 1700000; NPEAKS = 2048;   // overview waveform, computed once per load
+PEAKS = 1700000; NPEAKS = 2048;   // coarse waveform peaks, computed once per load
+PEAKS2 = 1740000; NPEAKS2 = 16384; // finer peaks, so zoomed views stay cheap to draw
 EV = 1710000; EV_MAX = 1000;      // this block's pad events: offset, pad, velocity (0 = release)
 NPADS = 16;
 // cues, one entry per pad; positions in seconds of the loaded section
 CU_SET = 1720000; CU_START = CU_SET + 16; CU_END = CU_SET + 32;   // CU_END < 0 = no end set
 CU_LEVEL = CU_SET + 48; CU_ATT = CU_SET + 64; CU_REL = CU_SET + 80; // dB, seconds, seconds
-// voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice
-NV = 32;
-V_ST = 1730000; V_POS = V_ST + 32; V_END = V_ST + 64; V_ENV = V_ST + 96;
-V_GAIN = V_ST + 128; V_ATT = V_ST + 160; V_REL = V_ST + 192; V_HELD = V_ST + 224;
-V_RELSET = V_ST + 256;            // cue release in seconds, used by Trigger mode (R15.9)
+// voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
+// 32 plays the source itself (play/pause and lazy chop)
+NV = 33; SRC = 32;
+V_ST = 1730000; V_POS = V_ST + 40; V_END = V_ST + 80; V_ENV = V_ST + 120;
+V_GAIN = V_ST + 160; V_ATT = V_ST + 200; V_REL = V_ST + 240; V_HELD = V_ST + 280;
+V_RELSET = V_ST + 320;            // cue release in seconds, used by Trigger mode (R15.9)
 VS_OFF = 0; VS_ATT = 1; VS_SUS = 2; VS_REL = 3; VS_PARK = 4;
 RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 
@@ -48,7 +51,7 @@ S_EMPTY = 0; S_LOADING = 1; S_PEAKS = 2; S_READY = 3; S_MISSING = 4;
 
 // one dark theme, colours defined once
 C_BG = 0x18181b; C_PANEL = 0x232327; C_FRAME = 0x3a3a40; C_TEXT = 0xe8e8ea;
-C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
+C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_WAVE_DIM = 0x2f6f8f; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
 C_BTN = 0x34343a; C_BTN_HOT = 0x46464e; C_BTN_ON = 0x5a5a66; C_PAD_EMPTY = 0x2c2c31;
 PALETTE = 1729000;                // one colour per pad (R7.3)
 PALETTE[0] = 0xff5a5a; PALETTE[1] = 0xff8c42; PALETTE[2] = 0xffc23d; PALETTE[3] = 0xd4e157;
@@ -66,6 +69,9 @@ function all_voices_off()
 (
   memset(V_ST, VS_OFF, NV);
   memset(V_ENV, 0, NV);
+  src_playing = 0;
+  lazy_pass = 0;
+  ph_voice = -1;
 );
 
 function reset_cues()
@@ -78,14 +84,6 @@ function reset_cues()
   memset(CU_ATT, 0, NPADS);
   memset(CU_REL, 0, NPADS);
   selected = -1;
-);
-
-// TEMP (slice 2 only): 16 even cues so the pads can be tested before cue
-// creation exists. Slice 3 removes this; R1.3 wants a fresh load empty.
-function temp_even_cues() local(i)
-(
-  i = 0;
-  loop(NPADS, CU_SET[i] = 1; CU_START[i] = i * sec_len / NPADS; i += 1);
 );
 
 function show_error(text)
@@ -102,6 +100,22 @@ function eject()
   has_err = 0;
   strcpy(#path, "");
   reset_cues();                  // R3.2
+);
+
+// A swap keeps cues; pull any that fall outside the new, shorter source
+// back inside it (R2.2, R2.3).
+function clamp_cues() local(i, last)
+(
+  last = sec_len - sec_len / 100;  // leaves one step at full zoom (Terms: minimum cue length)
+  i = 0;
+  loop(NPADS,
+    CU_SET[i] ? (
+      CU_START[i] > last ? CU_START[i] = max(0, last);
+      CU_END[i] > sec_len ? CU_END[i] = sec_len;
+      CU_END[i] >= 0 && CU_END[i] <= CU_START[i] ? CU_END[i] = sec_len;
+    );
+    i += 1;
+  );
 );
 
 // Validate the requested file fully before touching the buffer, so a failed
@@ -156,7 +170,9 @@ function request_load(reopen)
       nch = rnch; fsr = rfsr;
       sec_start = req_start;
       sec_len = rwant / rnch / rfsr;
-      fresh ? temp_even_cues();
+      !fresh && !reopen ? clamp_cues();
+      ph = 0;
+      view_reset = 1;
       skip_total = rskip; skipped = 0;
       want = rwant; got = 0;
       state = S_LOADING;
@@ -168,6 +184,7 @@ function begin_peaks()
 (
   frames = floor(got / nch);
   memset(PEAKS, 0, NPEAKS);
+  memset(PEAKS2, 0, NPEAKS2);
   pk_frame = 0;
   state = S_PEAKS;
 );
@@ -199,10 +216,10 @@ function load_step()
   ) : state == S_PEAKS ? (
     i = pk_frame;
     loop(min(CHUNK, frames - pk_frame),
-      b = floor(i * NPEAKS / frames);
       v = abs(BUF[i * nch]);
       nch > 1 ? v = max(v, abs(BUF[i * nch + 1]));
-      PEAKS[b] = max(PEAKS[b], v);
+      b = floor(i * NPEAKS / frames);  PEAKS[b] = max(PEAKS[b], v);
+      b = floor(i * NPEAKS2 / frames); PEAKS2[b] = max(PEAKS2[b], v);
       i += 1;
     );
     pk_frame = i;
@@ -217,7 +234,7 @@ function progress()
   : 1;
 );
 
-// ---- cue playback ----
+// ---- cues and playback ----
 
 // A cue without an end plays to the next cue's start, or to the section
 // end when no cue follows (R10.14).
@@ -234,8 +251,22 @@ function cue_end(p) local(e, i)
   );
 );
 
+function new_cue(p, t)
+(
+  // R9.11: default parameters, no end point
+  CU_SET[p] = 1; CU_START[p] = t; CU_END[p] = -1;
+  CU_LEVEL[p] = 0; CU_ATT[p] = 0; CU_REL[p] = 0;
+);
+
+function all_pads_set() local(i, n)
+(
+  n = 0; i = 0;
+  loop(NPADS, n += CU_SET[i]; i += 1);
+  n == NPADS;
+);
+
 // Hand a sounding voice over to a tail slot that fades it out, so a
-// retrigger or Mono steal never clicks (R15.11, R15.12, R16.2).
+// retrigger, seek or Mono steal never clicks (R15.11, R15.12, R16.2).
 function cut(v) local(t)
 (
   V_ST[v] != VS_OFF && V_ST[v] != VS_PARK && V_ENV[v] > 0 ? (
@@ -250,25 +281,77 @@ function cut(v) local(t)
   V_ENV[v] = 0;
 );
 
-function pad_press(p, vel) local(i)
+// the source player: plays from a position to the section end (R6.1)
+function src_start(pos)
 (
-  state == S_READY && CU_SET[p] ? (                       // R15.14: silent while missing/loading
-    slider3 == 0 ? (                                      // R16.2: Mono stops every other cue
-      i = 0;
-      loop(NPADS, i != p ? cut(i); i += 1);
+  cut(SRC);
+  V_POS[SRC] = max(0, min(pos, frames - 1));
+  V_END[SRC] = frames;
+  V_ENV[SRC] = 0; V_ATT[SRC] = 1 / ramp_n; V_RELSET[SRC] = 0;
+  V_GAIN[SRC] = 1; V_HELD[SRC] = 0;
+  V_ST[SRC] = VS_ATT;
+  src_playing = 1;
+  ph_voice = -1;
+  ph = V_POS[SRC];
+);
+
+function src_stop()
+(
+  ph = V_POS[SRC];               // R6.2: the playhead stays where it stopped
+  V_ST[SRC] == VS_ATT || V_ST[SRC] == VS_SUS ? (
+    V_REL[SRC] = V_ENV[SRC] / ramp_n;
+    V_ST[SRC] = VS_REL;
+  );
+  src_playing = 0;
+  lazy_pass = 0;                 // R9.8
+);
+
+function seek(pos)
+(
+  src_playing ? src_start(pos) : ( ph = max(0, min(pos, frames - 1)); ph_voice = -1; );
+);
+
+function play_cue(p, vel) local(i)
+(
+  src_playing ? src_stop();      // one playhead: the cue takes it over
+  slider3 == 0 ? (               // R16.2: Mono stops every other cue
+    i = 0;
+    loop(NPADS, i != p ? cut(i); i += 1);
+  );
+  cut(p);                        // R15.11: restart from the start
+  V_POS[p] = CU_START[p] * fsr;
+  V_END[p] = cue_end(p) * fsr;
+  V_ENV[p] = 0;
+  V_ATT[p] = 1 / max(CU_ATT[p] * srate, ramp_n);
+  V_RELSET[p] = CU_REL[p];
+  V_REL[p] = 1 / max(CU_REL[p] * srate, ramp_n);
+  // R17.11, R17.12: 127 plays at the set level, lower is proportionally quieter
+  V_GAIN[p] = 10 ^ (CU_LEVEL[p] / 20) * (slider4 ? vel / 127 : 1);
+  V_HELD[p] = 1;
+  V_ST[p] = VS_ATT;
+  ph_voice = p;
+);
+
+function pad_press(p, vel)
+(
+  state == S_READY ? (                                    // R9.12, R15.14
+    !CU_SET[p] ? (
+      new_cue(p, ph / fsr);                               // R9.2, R9.4, R9.10
+      selected = p;
+      slider5 ? (
+        // lazy chop: an empty pad starts a pass; while it runs the source
+        // keeps playing and every empty pad drops a cue (R9.3, R9.5)
+        !src_playing ? src_start(ph);
+        lazy_pass = 1;
+        all_pads_set() ? lazy_pass = 0;                   // R9.9
+      );
+    ) : lazy_pass ? (
+      seek(CU_START[p] * fsr);                            // R9.7
+      selected = p;
+    ) : (
+      play_cue(p, vel);
+      selected = p;                                       // R15.3
     );
-    cut(p);                                               // R15.11: restart from the start
-    V_POS[p] = CU_START[p] * fsr;
-    V_END[p] = cue_end(p) * fsr;
-    V_ENV[p] = 0;
-    V_ATT[p] = 1 / max(CU_ATT[p] * srate, ramp_n);
-    V_RELSET[p] = CU_REL[p];
-    V_REL[p] = 1 / max(CU_REL[p] * srate, ramp_n);
-    // R17.11, R17.12: 127 plays at the set level, lower is proportionally quieter
-    V_GAIN[p] = 10 ^ (CU_LEVEL[p] / 20) * (slider4 ? vel / 127 : 1);
-    V_HELD[p] = 1;
-    V_ST[p] = VS_ATT;
-    selected = p;                                         // R15.3
   );
 );
 
@@ -280,6 +363,16 @@ function pad_release(p)
       V_REL[p] = V_ENV[p] / max(CU_REL[p] * srate, ramp_n);
       V_ST[p] = VS_REL;
     ) : V_ST[p] == VS_PARK ? V_ST[p] = VS_OFF;
+  );
+);
+
+function delete_cue(p)
+(
+  CU_SET[p] ? (                                           // R11.7: empty pad, nothing changes
+    cut(p);
+    ph_voice == p ? ph_voice = -1;
+    CU_SET[p] = 0; CU_END[p] = -1;                        // R11.1
+    selected == p ? selected = -1;
   );
 );
 
@@ -313,6 +406,14 @@ state == S_LOADING || state == S_PEAKS ? load_step();
 ramp_n = max(1, floor(RAMP_S * srate));
 step = fsr / srate;               // play at the file's own rate
 
+// requests from the window, applied here so only the audio thread touches voices
+state == S_READY ? (                                      // R6.7: ignored without a source
+  play_req ? ( src_playing ? src_stop() : src_start(ph); );
+  seek_req ? seek(seek_pos);
+  del_req ? delete_cue(del_req - 1);
+);
+play_req = 0; seek_req = 0; del_req = 0;
+
 // Pad events are queued with their sample offset and fired in @sample, so
 // finger drumming keeps its timing inside the block. Mouse clicks go first.
 ev_n = 0; ev_i = 0; smp = 0;
@@ -322,7 +423,7 @@ while (midirecv(offset, msg1, msg2, msg3) ? (
   // shown in the window: tells at a glance whether and what a controller sends
   mon_1 = msg1; mon_2 = msg2; mon_3 = msg3; mon_count += 1;
   status = msg1 & 0xF0;
-  pad = msg2 - 36;                                        // notes 36..51 = pads 1..16 (R20.1)
+  pad = msg2;                                             // notes 0..15 = pads 1..16 (R20.1)
   pad >= 0 && pad < NPADS && (status == 0x90 || status == 0x80) ? (
     add_event(offset, pad, status == 0x90 ? msg3 : 0);    // note-on with velocity 0 is a release
   ) : (
@@ -389,6 +490,20 @@ state == S_READY ? (
     );
     v += 1;
   );
+
+  // the playhead follows the source player, or else the last triggered cue
+  src_playing ? (
+    V_ST[SRC] == VS_OFF ? (
+      src_playing = 0; lazy_pass = 0;                     // played to the end (R9.8)
+      ph = frames - 1;
+    ) : ph = V_POS[SRC];
+  ) : ph_voice >= 0 ? (
+    V_ST[ph_voice] == VS_OFF ? (
+      // R15.6: Hold returns to the cue start; Trigger stays where it stopped (R15.10)
+      ph = slider2 == 0 ? CU_START[ph_voice] * fsr : min(V_POS[ph_voice], frames - 1);
+      ph_voice = -1;
+    ) : ph = min(V_POS[ph_voice], frames - 1);
+  );
 );
 spl0 = out_l;
 spl1 = out_r;
@@ -437,7 +552,7 @@ file_avail(0) >= 0 ? (
   );
 );
 
-@gfx 900 640
+@gfx 900 760
 function rgb(c) ( gfx_set(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255); );
 
 function text_at(x, y, s) ( gfx_x = x; gfx_y = y; gfx_drawstr(s); );
@@ -462,8 +577,41 @@ function button(x, y, w, hh, label, on) local(hot)
   hot && clicked;
 );
 
+// Waveform of t0..t1 seconds into a box. Picks the coarsest peak table
+// that still has at least one entry per pixel, raw samples when zoomed in.
+function draw_wave(x, y, w, hh, t0, t1) local(f0, fpp, b1, b2, i, a, e, m, j, je, mid, half)
+(
+  f0 = t0 * fsr; fpp = (t1 - t0) * fsr / w;
+  b1 = frames / NPEAKS; b2 = frames / NPEAKS2;
+  mid = y + hh / 2; half = hh / 2 - 2;
+  i = 0;
+  loop(w,
+    a = max(0, floor(f0 + i * fpp)); e = min(frames, max(a + 1, floor(f0 + (i + 1) * fpp)));
+    m = 0;
+    a < e ? (
+      fpp >= b1 ? (
+        j = floor(a / b1); je = min(NPEAKS, max(j + 1, ceil(e / b1)));
+        loop(je - j, m = max(m, PEAKS[j]); j += 1);
+      ) : fpp >= b2 ? (
+        j = floor(a / b2); je = min(NPEAKS2, max(j + 1, ceil(e / b2)));
+        loop(je - j, m = max(m, PEAKS2[j]); j += 1);
+      ) : (
+        j = a;
+        loop(e - a, m = max(m, abs(BUF[j * nch])); nch > 1 ? m = max(m, abs(BUF[j * nch + 1])); j += 1);
+      );
+      gfx_line(x + i, mid - m * half, x + i, mid + m * half);
+    );
+    i += 1;
+  );
+);
+
+function t2x(t) ( mw_x + (t - view_start) / view_len * mw_w; );
+function x2t(x) ( view_start + (x - mw_x) / mw_w * view_len; );
+function clamp_view() ( view_len = max(min_view, min(view_len, sec_len)); view_start = max(0, min(view_start, sec_len - view_len)); );
+
 clicked = (mouse_cap & 1) && !(last_cap & 1);
 released = !(mouse_cap & 1) && (last_cap & 1);
+shift_held = mouse_cap & 8;
 
 rgb(C_BG); gfx_rect(0, 0, gfx_w, gfx_h);
 pad = 12;
@@ -485,63 +633,139 @@ has_source ? (
 ) : (
   rgb(C_DIM); text_at(pad, 17, "No source loaded");
 );
-
-// overview of the whole loaded section with the waveform (R7.1)
-ov_x = pad; ov_y = hdr_h + pad; ov_w = gfx_w - 2 * pad; ov_h = 110;
-rgb(C_PANEL); gfx_rect(ov_x, ov_y, ov_w, ov_h);
 gfx_setfont(2, "Arial", 13);
+
+ov_x = pad; ov_y = hdr_h + pad; ov_w = gfx_w - 2 * pad; ov_h = 60;
+mw_x = pad; mw_y = ov_y + ov_h + 8; mw_w = gfx_w - 2 * pad; mw_h = 170;
+rgb(C_PANEL); gfx_rect(ov_x, ov_y, ov_w, ov_h); gfx_rect(mw_x, mw_y, mw_w, mw_h);
+
 state == S_READY ? (
-  rgb(C_WAVE);
-  mid = ov_y + ov_h / 2;
-  x = 0;
-  loop(ov_w,
-    a = floor(x * NPEAKS / ov_w); b = max(a + 1, floor((x + 1) * NPEAKS / ov_w));
-    m = 0; j = a;
-    loop(b - a, m = max(m, PEAKS[j]); j += 1);
-    gfx_line(ov_x + x, mid - m * (ov_h / 2 - 2), ov_x + x, mid + m * (ov_h / 2 - 2));
-    x += 1;
+  min_view = 256 / fsr;
+  view_reset ? ( view_start = 0; view_len = sec_len; view_reset = 0; );
+  clamp_view();
+  step_len = view_len / 100;                              // Terms: step and minimum cue length
+
+  // zoom with the mouse wheel over the main waveform, around the pointer (R7.5)
+  mouse_wheel != 0 && inside(mw_x, mw_y, mw_w, mw_h) ? (
+    zt = x2t(mouse_x);
+    view_len *= mouse_wheel > 0 ? 0.8 : 1.25;
+    clamp_view();
+    view_start = zt - (mouse_x - mw_x) / mw_w * view_len;
+    clamp_view();
   );
-  // cue starts in their pad colours, and where each sounding voice is
+  mouse_wheel = 0;
+
+  // keep the playhead in view while playing, unless frozen (R7.6, R7.7)
+  moving = src_playing || ph_voice >= 0;
+  pht = ph / fsr;
+  moving && !freeze && drag_mode == 0 && (pht < view_start || pht > view_start + view_len) ? (
+    view_start = pht - view_len * 0.1;
+    clamp_view();
+  );
+
+  // overview: whole section, current view, cues and playhead (R7.1)
+  rgb(C_WAVE_DIM);
+  draw_wave(ov_x, ov_y, ov_w, ov_h, 0, sec_len);
+  gfx_set(1, 1, 1, 0.08);
+  gfx_rect(ov_x + view_start / sec_len * ov_w, ov_y, max(2, view_len / sec_len * ov_w), ov_h);
+  gfx_a = 1;
+  j = 0;
+  loop(NPADS,
+    CU_SET[j] ? ( rgb(PALETTE[j]); cx = ov_x + CU_START[j] / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1); );
+    j += 1;
+  );
+  gfx_set(1, 1, 1);
+  cx = ov_x + pht / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1);
+
+  // main waveform with cue regions, handles and playhead (R7.2-R7.4, R7.8, R7.9)
+  j = 0;
+  loop(NPADS,
+    CU_SET[j] && CU_END[j] >= 0 ? (
+      x0 = max(mw_x, t2x(CU_START[j])); x1 = min(mw_x + mw_w, t2x(CU_END[j]));
+      x1 > x0 ? ( rgb(PALETTE[j]); gfx_a = 0.18; gfx_rect(x0, mw_y, x1 - x0, mw_h); gfx_a = 1; );
+    );
+    j += 1;
+  );
+  rgb(C_WAVE);
+  draw_wave(mw_x, mw_y, mw_w, mw_h, view_start, view_start + view_len);
   j = 0;
   loop(NPADS,
     CU_SET[j] ? (
-      cx = ov_x + CU_START[j] / sec_len * ov_w;
-      rgb(PALETTE[j]); gfx_line(cx, ov_y, cx, ov_y + ov_h - 1);
-      gfx_x = cx + 3; gfx_y = ov_y + 2; gfx_drawnumber(j + 1, 0);
+      rgb(PALETTE[j]);
+      cx = t2x(CU_START[j]);
+      cx >= mw_x && cx < mw_x + mw_w ? (
+        gfx_line(cx, mw_y, cx, mw_y + mw_h - 1);
+        gfx_triangle(cx, mw_y, cx + 12, mw_y, cx, mw_y + 12);
+        gfx_x = cx + 3; gfx_y = mw_y + 13; gfx_drawnumber(j + 1, 0);
+      );
+      // the end handle shows when an end is set; the selected cue also gets
+      // a faint one at its implied end so an end can be dragged out (R10.15)
+      CU_END[j] >= 0 || j == selected ? (
+        cx = t2x(cue_end(j));
+        gfx_a = CU_END[j] >= 0 ? 1 : 0.4;
+        cx >= mw_x && cx <= mw_x + mw_w ? gfx_triangle(cx, mw_y + mw_h - 1, cx - 12, mw_y + mw_h - 1, cx, mw_y + mw_h - 13);
+        gfx_a = 1;
+      );
     );
     j += 1;
   );
   gfx_set(1, 1, 1);
-  j = 0;
-  loop(NV,
-    V_ST[j] != VS_OFF && V_ST[j] != VS_PARK ? (
-      cx = ov_x + V_POS[j] / fsr / sec_len * ov_w;
-      gfx_line(cx, ov_y, cx, ov_y + ov_h - 1);
+  cx = t2x(pht);
+  cx >= mw_x && cx < mw_x + mw_w ? ( gfx_line(cx, mw_y, cx, mw_y + mw_h - 1); gfx_line(cx + 1, mw_y, cx + 1, mw_y + mw_h - 1); );
+
+  // mouse down: handle drag, scrub, or overview seek
+  clicked && inside(mw_x, mw_y, mw_w, mw_h) ? (
+    drag_mode = 3;                                        // scrub unless a handle is hit (R6.3)
+    j = 0;
+    loop(NPADS,
+      CU_SET[j] ? (
+        abs(mouse_x - t2x(CU_START[j])) <= 7 && mouse_y < mw_y + 26 ? ( drag_mode = 1; drag_cue = j; );
+        (CU_END[j] >= 0 || j == selected) && abs(mouse_x - t2x(cue_end(j))) <= 7 && mouse_y > mw_y + mw_h - 16 ? ( drag_mode = 2; drag_cue = j; );
+      );
+      j += 1;
     );
-    j += 1;
+    drag_mode != 3 ? selected = drag_cue;
+  );
+  clicked && inside(ov_x, ov_y, ov_w, ov_h) ? drag_mode = 4;
+
+  (mouse_cap & 1) && drag_mode ? (
+    drag_mode == 1 ? (
+      // R10.1 with R10.7 and R10.9
+      t = max(0, x2t(mouse_x));
+      t = min(t, (CU_END[drag_cue] >= 0 ? CU_END[drag_cue] : sec_len) - step_len);
+      CU_START[drag_cue] = max(0, t);
+    ) : drag_mode == 2 ? (
+      CU_END[drag_cue] < 0 ? CU_END[drag_cue] = cue_end(drag_cue);   // R10.15
+      // R10.2 with R10.8, R10.9; may pass the next cue's start (R10.16)
+      t = min(sec_len, x2t(mouse_x));
+      CU_END[drag_cue] = max(t, CU_START[drag_cue] + step_len);
+    ) : drag_mode == 3 ? (
+      seek_pos = max(0, min(sec_len, x2t(mouse_x))) * fsr; seek_req = 1;
+    ) : drag_mode == 4 ? (
+      seek_pos = max(0, min(1, (mouse_x - ov_x) / ov_w)) * sec_len * fsr; seek_req = 1;   // R6.4
+    );
   );
 ) : state == S_LOADING || state == S_PEAKS ? (
   // R4.3
-  bar_y = ov_y + ov_h / 2 - 4;
-  rgb(C_FRAME); gfx_rect(ov_x + 40, bar_y, ov_w - 80, 8);
-  rgb(C_WAVE); gfx_rect(ov_x + 40, bar_y, (ov_w - 80) * progress(), 8);
-  rgb(C_DIM); text_at(ov_x + 40, bar_y - 22, "Loading ...");
+  bar_y = mw_y + mw_h / 2 - 4;
+  rgb(C_FRAME); gfx_rect(mw_x + 40, bar_y, mw_w - 80, 8);
+  rgb(C_WAVE); gfx_rect(mw_x + 40, bar_y, (mw_w - 80) * progress(), 8);
+  rgb(C_DIM); text_at(mw_x + 40, bar_y - 22, "Loading ...");
 ) : state == S_MISSING ? (
   // R5.3, R5.5
-  rgb(C_WARN); text_at(ov_x + 16, ov_y + 20, "The source file is missing:");
-  rgb(C_TEXT); text_at(ov_x + 16, ov_y + 40, #path);
-  rgb(C_DIM); text_at(ov_x + 16, ov_y + 72, "Select an item and run \"ReaFlip_Load.lua\" to use another file. Cues are kept.");
+  rgb(C_WARN); text_at(mw_x + 16, mw_y + 20, "The source file is missing:");
+  rgb(C_TEXT); text_at(mw_x + 16, mw_y + 40, #path);
+  rgb(C_DIM); text_at(mw_x + 16, mw_y + 72, "Select an item and run \"ReaFlip_Load.lua\" to use another file. Cues are kept.");
 ) : (
   // R3.3
   rgb(C_DIM);
-  text_at(ov_x + 16, ov_y + 30, "Select an audio item (WAV or AIFF) in REAPER and run the action");
-  text_at(ov_x + 16, ov_y + 50, "\"ReaFlip_Load.lua\" to load it here.");
+  text_at(mw_x + 16, mw_y + 30, "Select an audio item (WAV or AIFF) in REAPER and run the action");
+  text_at(mw_x + 16, mw_y + 50, "\"ReaFlip_Load.lua\" to load it here.");
 );
+released ? drag_mode = 0;
 
-has_err ? (
-  rgb(C_ERR);
-  text_at(pad, ov_y + ov_h + 6, #err);
-);
+info_y = mw_y + mw_h + 6;
+has_err ? ( rgb(C_ERR); text_at(pad, info_y, #err); );
 
 // MIDI monitor
 rgb(C_DIM);
@@ -550,20 +774,30 @@ mon_count ? (
   strcpy(#mtype, ms == 0x90 ? (mon_3 > 0 ? "note on" : "note off") : ms == 0x80 ? "note off"
     : ms == 0xB0 ? "CC" : ms == 0xA0 ? "aftertouch" : ms == 0xD0 ? "channel pressure"
     : ms == 0xE0 ? "pitch bend" : ms == 0xC0 ? "program change" : "other");
-  text_at(gfx_w - pad - 330, ov_y + ov_h + 6,
+  text_at(gfx_w - pad - 330, info_y,
     sprintf(#t, "Last MIDI: %s  ch %d  %d / %d   (#%d)", #mtype, (mon_1 & 15) + 1, mon_2, mon_3, mon_count));
-) : text_at(gfx_w - pad - 330, ov_y + ov_h + 6, "Last MIDI: nothing received yet");
+) : text_at(gfx_w - pad - 330, info_y, "Last MIDI: nothing received yet");
 
-// mode bar: changes go through slider_automate so REAPER records them
-bar_y = ov_y + ov_h + 28; bw = 74; bh = 26;
-button(pad, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); );
-button(pad + bw, bar_y, bw, bh, "Trigger", slider2 == 1) ? ( slider2 = 1; slider_automate(slider2); );
-button(pad + 2 * bw + 12, bar_y, bw, bh, "Mono", slider3 == 0) ? ( slider3 = 0; slider_automate(slider3); );
-button(pad + 3 * bw + 12, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate(slider3); );
-button(pad + 4 * bw + 24, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); );
+// controls; mode changes go through slider_automate so REAPER records them
+bar_y = info_y + 22; bw = 70; bh = 26; bx = pad;
+button(bx, bar_y, bw, bh, src_playing ? "Pause" : "Play", src_playing) ? play_req = 1;      // R6.1, R6.2
+bx += bw + 12;
+button(bx, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); ); bx += bw;
+button(bx, bar_y, bw, bh, "Trigger", slider2 == 1) ? ( slider2 = 1; slider_automate(slider2); ); bx += bw + 12;
+button(bx, bar_y, bw, bh, "Mono", slider3 == 0) ? ( slider3 = 0; slider_automate(slider3); ); bx += bw;
+button(bx, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate(slider3); ); bx += bw + 12;
+button(bx, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); ); bx += bw + 22;
+button(bx, bar_y, bw + 16, bh, "Lazy chop", slider5 == 1) ? ( slider5 = !slider5; slider_automate(slider5); ); bx += bw + 28;
+button(bx, bar_y, bw, bh, "Delete", 0) && selected >= 0 ? del_req = selected + 1;           // R11.1
+// right-aligned: Freeze, then a gap, then zoom out / in
+bx = gfx_w - pad - 70;
+button(bx, bar_y, 70, bh, "Freeze", freeze) ? freeze = !freeze;                               // R7.7
+bx -= 12 + 2 * 34;
+button(bx, bar_y, 34, bh, "-", 0) ? ( view_len *= 1.5; clamp_view(); );                     // R7.5
+button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 
 // 4x4 pads, pad 1 bottom-left like the hardware; lit while sounding (R15.2),
-// outlined when selected (R15.3)
+// outlined when selected (R15.3). Shift-click deletes (R11.2).
 pads_y = bar_y + bh + 14;
 gap = 8;
 ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
@@ -578,14 +812,16 @@ loop(NPADS,
     rgb(PALETTE[p]);
     gfx_a = sounding ? 1 : 0.35;
   ) : (
-    rgb(C_PAD_EMPTY);
+    rgb(C_PAD_EMPTY);                                     // R11.5
   );
   gfx_rect(px, py, ps, ps);
   gfx_a = 1;
   p == selected ? ( rgb(C_TEXT); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); );
   rgb(sounding ? C_BG : C_TEXT);
   gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0);
-  clicked && inside(px, py, ps, ps) ? ( gfx_press = p + 1; mouse_pad = p + 1; );
+  clicked && inside(px, py, ps, ps) ? (
+    shift_held ? del_req = p + 1 : ( gfx_press = p + 1; mouse_pad = p + 1; );
+  );
   p += 1;
 );
 released && mouse_pad ? ( gfx_release = mouse_pad; mouse_pad = 0; );

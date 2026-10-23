@@ -4,7 +4,7 @@ title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
 date: 2026-10-22
-revision: 4
+revision: 5
 status: ready
 ---
 
@@ -270,7 +270,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R19.5 — If there is nothing to undo or redo, then the system shall leave everything unchanged.
 
 ### R20: Learn SLAB controls
-- R20.1 — The system shall use MIDI notes 36 to 51 (C1–D#2) as pads 1 to 16 in a new instance, on any MIDI channel.
+- R20.1 — The system shall use MIDI notes 0 to 15 as pads 1 to 16 in a new instance, on any MIDI channel. _(why: what SLAB sends from its default pad bank in general MIDI mode)_
 - R20.2 — When the producer starts learning, the system shall ask for pads 1 to 16 to be hit in order and show which pads have been captured.
 - R20.3 — While learning pads, if the producer hits a note already captured for another pad, then the system shall reject it and ask again.
 - R20.4 — When the producer turns the dial clockwise and then counter-clockwise during learning, the system shall record which control the dial is.
@@ -364,10 +364,11 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - SLAB Quantize size (Shift + Scene Size −/+); Quantize snaps to 1/8 beat only.
 
 ## Open questions
-- Q1 — What does SLAB send in general MIDI mode for each control in R20 and R21 (note or CC numbers, dial and encoder encoding, whether Shift, Delete and the arrows send anything)? The operating instructions refer to a separate MIDI message list at alphatheta.com/support, not found yet. Until then the learn step (R20) discovers it. _(Christian to supply the list, or confirm by learning on the unit)_
+- Q1 — Pads are known: notes 0–15 for pads 1–16 in the default bank (tested 2026-10-22). Still unknown: what SLAB sends for the other controls in R20 and R21 (CC numbers, dial and encoder encoding, whether Shift, Delete and the arrows send anything)? The operating instructions refer to a separate MIDI message list at alphatheta.com/support, not found yet. Until then the learn step (R20) discovers it. _(Christian to supply the list, or confirm by learning on the unit)_
 
 ## Revisions
 - r1 — initial version
 - r2 — working title; source is the item's section, WAV/AIFF only, 18 s at 44.1 kHz stereo scaled by format (R1.7–R1.9 changed, R1.12–R1.15 added, R1.10 track name); swap resets the beatgrid, cancelled analysis keeps the source without grid (R4.6, R4.7); BPM range 20–220 (R8.12 changed, R8.13 added); default end = next cue's start, may pass it (R10.14 changed, R10.15–R10.16 added); Quantize off by default (R10.17); step = 1/100 of the visible span (Terms); Velocity on, 127 = set level (R17.11 changed, R17.18); per-cue loop modes and crossfade (R15.16–R15.18, R17.19–R17.24, R21.25, R21.26, R21.16 changed); Shift + Select All toggles Quantize (R21.27); mono plays on both sides (R15.15); Note Repeat removed (R21.19–R21.23 retired); C3, C5 changed, C7 added; Q2–Q6, Q8, Q11 resolved, Q1, Q7, Q9 narrowed, Q12, Q13 added.
 - r3 — minimum cue length = one step at current zoom (Terms); defaults Slicer 1 beat, Find samples 16 (R13.8, R14.9); loop crossfade up to cue length (R17.25, R17.27); loop direction follows the playing direction, reverse flips it (R17.20–R17.22 changed, R17.26 added); export dropped; Q7, Q9, Q10, Q12 resolved; status ready.
 - r4 — name decided: ReaFlip (title, Context, Terms: Instance); Q13 resolved.
+- r5 — default pad notes 0–15, as SLAB sends them (R20.1 changed); Q1 narrowed to the non-pad controls.
