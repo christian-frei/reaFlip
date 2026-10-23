@@ -595,6 +595,7 @@ function play_cue(p, vel) local(i)
   V_HELD[p] = 1;
   V_ST[p] = VS_ATT;
   ph_voice = p;
+  pad_hits += 1;                 // the window shows this cue (R7.10)
 );
 
 // Selection (R18). SEL marks the selected cues; `selected` is the one the
@@ -1747,6 +1748,7 @@ function draw_wave(x, y, w, hh, t0, t1) local(f0, fpp, b1, b2, i, a, e, m, j, je
 
 function t2x(t) ( mw_x + (t - view_start) / view_len * mw_w; );
 function x2t(x) ( view_start + (x - mw_x) / mw_w * view_len; );
+function x_to_ov_t(x) ( max(0, min(1, (x - ov_x) / ov_w)) * sec_len; );
 function clamp_view() ( view_len = max(min_view, min(view_len, sec_len)); view_start = max(0, min(view_start, sec_len - view_len)); );
 
 clicked = (mouse_cap & 1) && !(last_cap & 1);
@@ -1822,6 +1824,22 @@ state == S_READY ? (
     view_start = pht - view_len * 0.1;
     clamp_view();
   );
+  // a pad hit shows its cue 10 % in from the left, and the view returns
+  // there once the pad has stopped sounding (R7.10, R7.11)
+  pad_hits != seen_hits ? (
+    seen_hits = pad_hits;
+    ph_voice >= 0 ? ( view_cue = ph_voice; view_back = 1; );
+    !freeze && drag_mode == 0 && view_cue >= 0 && CU_SET[view_cue] ? (
+      view_start = CU_START[view_cue] - view_len * 0.1; clamp_view();
+    );
+  );
+  view_back && !moving ? (
+    view_back = 0;
+    !freeze && drag_mode == 0 && view_cue >= 0 && CU_SET[view_cue] ? (
+      view_start = CU_START[view_cue] - view_len * 0.1; clamp_view();
+    );
+  );
+  src_playing ? view_back = 0;   // the source player owns the playhead now
 
   // overview: whole section, current view, cues and playhead (R7.1)
   rgb(C_WAVE_DIM);
@@ -1929,7 +1947,15 @@ state == S_READY ? (
     );
     drag_mode != 3 ? select_only(drag_cue);
   );
-  clicked && !learn_active && inside(ov_x, ov_y, ov_w, ov_h) ? drag_mode = 4;
+  // overview: grab the view box to move the main waveform (R7.12); a click
+  // elsewhere, or one that doesn't move, seeks (R6.4)
+  clicked && !learn_active && inside(ov_x, ov_y, ov_w, ov_h) ? (
+    ovb_x = ov_x + view_start / sec_len * ov_w;
+    view_len < sec_len * 0.999 && mouse_x >= ovb_x - 3 && mouse_x <= ovb_x + max(2, view_len / sec_len * ov_w) + 3 ? (
+      drag_mode = 9; ov_grab = x_to_ov_t(mouse_x) - view_start; ov_down_x = mouse_x; ov_moved = 0;
+    ) : drag_mode = 4;
+  );
+  released && drag_mode == 9 && !ov_moved ? ( seek_pos = x_to_ov_t(ov_down_x) * fsr; seek_req = 1; );
 
   (mouse_cap & 1) && drag_mode ? (
     drag_mode == 1 ? set_start(drag_cue, x2t(mouse_x))   // R10.1
@@ -1941,7 +1967,11 @@ state == S_READY ? (
     ) : drag_mode == 7 ? (
       gt = (x2t(mouse_x) - gs) / ge_k;
       gt > 0 ? set_bpm(60 / gt);
-    ) : drag_mode == 8 ? gs = ge_gsd + x2t(mouse_x) - ge_t0;
+    ) : drag_mode == 8 ? gs = ge_gsd + x2t(mouse_x) - ge_t0
+    : drag_mode == 9 && (ov_moved || abs(mouse_x - ov_down_x) > 2) ? (
+      ov_moved = 1;
+      view_start = x_to_ov_t(mouse_x) - ov_grab; clamp_view();
+    );
   );
 ) : state == S_LOADING || state == S_PEAKS ? (
   // R4.3

@@ -4,7 +4,7 @@ title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
 date: 2026-10-23
-revision: 8
+revision: 9
 status: ready
 ---
 
@@ -115,6 +115,9 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R7.5 — When the producer zooms in or out, the system shall show a shorter or longer part of the source in the main waveform.
 - R7.6 — While the source is playing and Freeze is off, the system shall keep the playhead in view in the main waveform.
 - R7.7 — While Freeze is on, the system shall keep the main waveform still while the playhead moves.
+- R7.10 — While Freeze is off, when the producer plays a pad, the system shall show that pad's cue start one tenth of the main waveform's width from its left edge.
+- R7.11 — While Freeze is off, when a played pad stops sounding, the system shall show that pad's cue start one tenth of the main waveform's width from its left edge again.
+- R7.12 — When the producer drags the current-view box in the overview, the system shall move the main waveform's view with it, keeping the zoom.
 
 ### R8: Edit the beatgrid
 - R8.1 — When the producer enters grid edit, the system shall show the bar and beat markers on the main waveform.
@@ -389,3 +392,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r6 — load target with several instances (R1.16 added); Shift combinations learned on their own (R20.15 added).
 - r7 — encoders remapped to level, filter, attack, key shift (R21.2–R21.4 changed); release is set in the window only.
 - r8 — time stretch moved into scope: Sync to the project tempo, per-cue stretch and key shift that keeps tempo (R23 added, R17.8 changed, `stretch-time` added, Out of scope narrowed).
+- r9 — view follows pad hits: cue start at 10 % on a hit and again when it stops (R7.10, R7.11); overview view box can be dragged (R7.12).
