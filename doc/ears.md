@@ -4,7 +4,7 @@ title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
 date: 2026-10-23
-revision: 9
+revision: 10
 status: ready
 ---
 
@@ -330,6 +330,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R23.8 — While a cue keeps its tempo, when its key is shifted, the system shall change its pitch without changing its length.
 - R23.9 — While Sync is on, the system shall apply each cue's stretch on top of the tempo change.
 - R23.10 — The system shall keep cue positions, the waveform and the beatgrid in the source's own time, whatever the stretch.
+- R23.11 — The system shall offer, for the whole instance, a choice between a stretch suited to drums and one suited to melodic material, set to drums in a new instance.
 
 ## Terms
 - Source — the one audio file loaded into an instance; a stem or loop chosen after STEMwerk separation.
@@ -393,3 +394,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r7 — encoders remapped to level, filter, attack, key shift (R21.2–R21.4 changed); release is set in the window only.
 - r8 — time stretch moved into scope: Sync to the project tempo, per-cue stretch and key shift that keeps tempo (R23 added, R17.8 changed, `stretch-time` added, Out of scope narrowed).
 - r9 — view follows pad hits: cue start at 10 % on a hit and again when it stops (R7.10, R7.11); overview view box can be dragged (R7.12).
+- r10 — stretch algorithm per instance: drums or melodic, drums by default (R23.11 added).

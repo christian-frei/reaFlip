@@ -208,14 +208,28 @@ project rate (resample on playback, linear interpolation is fine for v1).
 - **Filter** (R17.4–17.6): RBJ biquad per voice, Q 0.707, cutoff on a log
   scale 17 kHz → 80 Hz; recomputed in `@block` when the cue's value changes
   while it sounds (the touch strip moves it live).
-- **Stretch** (R23, slice 5e): time-domain overlap-add per voice (WSOLA:
-  ~40–80 ms Hann grains, the next grain's start searched by
-  cross-correlation so waveforms line up). Cheap enough for 16 voices and
-  good on drums; tonal material gets some phasiness at large ratios. A
-  phase vocoder (JSFX has `fft`) sounds smoother on pads but smears
-  transients and costs far more — only if WSOLA disappoints. Sync ratio =
-  project `tempo` / source BPM; the voice's read rate stays the key/speed
-  ratio, the grain hop carries the stretch.
+- **Stretch** (R23, slice 5e): per voice a time rate `V_TSP` (source
+  frames per output sample, relative to `step`) next to the pitch rate
+  `V_SPD`. Only while they differ does a voice run an engine (`V_GON`);
+  otherwise @sample takes the plain read and stretch costs nothing.
+  Sync ratio = project `tempo` / source BPM, updated every block (R23.3).
+  Slider 8 picks the engine (R23.11):
+  - **Drums = WSOLA**: two grains, 25 ms hop, rising sin² crossfade; each
+    new grain starts within ±8 ms of the voice's position at the offset with
+    the best cross-correlation (every 8th sample of the L+R sum, coarse
+    step 6, then fine). Grains are kept inside the cue's bounds. Inline in
+    @sample, cheap.
+  - **Melodic = phase vocoder**: 2048-point Hann frames, hop 512, one
+    complex FFT per frame for both channels (L real, R imaginary), identity
+    phase locking on the L+R sum with the same rotation for both channels
+    (stereo image holds), phase reset when frame energy doubles (attacks).
+    Frames are made in @block into a per-voice overlap-add ring
+    (`PV_BASE + v * PVS`), @sample only reads; three silent pre-roll frames
+    make the first sample complete, and the first 46 ms blend in from a
+    plain read so the attack is untouched. Tails copy the ring.
+  - Reads outside the voice's `LO..HI` are silence, so a stretched cue never
+    plays past its bounds. EEL2 names are case-insensitive: never use `b`
+    and `B` (or `d` and `D`) in one function.
 - **Lazy chop** (R9): state machine — idle / pass running; pass ends on stop
   or when all 16 pads hold cues.
 

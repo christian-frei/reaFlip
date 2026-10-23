@@ -2,7 +2,7 @@ desc:ReaFlip
 // The name lives here, in NAME in ReaFlip_Load.lua and in the README.
 // Behaviour: doc/ears.md, build notes: AGENTS.md.
 options:gmem=ReaFlip
-options:maxmem=2097152
+options:maxmem=4194304
 
 // Hidden: the load action writes a random token here so that only this
 // instance answers its gmem request (gmem is shared by all instances).
@@ -12,6 +12,8 @@ slider3:0<0,1,1{Mono,Poly}>Voice mode
 slider4:1<0,1,1{Off,On}>Velocity
 slider5:1<0,1,1{Off,On}>Lazy chop
 slider6:0<0,1,1{Off,On}>Quantize
+slider7:0<0,1,1{Off,On}>Sync
+slider8:0<0,1,1{Drums,Melodic}>Stretch mode
 
 in_pin:none
 out_pin:Left
@@ -42,9 +44,12 @@ CU_REV = CU_SET + 112; CU_KEY = CU_SET + 128;   // 0/1; semitones -24..24
 CU_LOOP = CU_SET + 144; CU_XF = CU_SET + 160;   // 0 off, 1 forward, 2 backward, 3 alternate; seconds
 CU_FAV = CU_SET + 176;            // favourite mark (R18.4)
 CU_COL = CU_SET + 192;            // palette index; travels with the cue when moved or copied (R12.3)
-CU_NAME = CU_SET + 208; NAME_LEN = 24;   // per pad: character codes, 0-terminated (R12.6)
-NCF = 13;                         // numeric cue fields, 16 values each
-CUE_SIZE = 208 + NPADS * NAME_LEN;       // all cue state as one block, so undo can copy it
+CU_STR = CU_SET + 208;            // stretch as a power of two: -2..2 = 0.25x..4x, 0 = 1x (R23.5)
+CU_KT = CU_SET + 224;             // keep tempo when the key shifts, 0/1 (R23.6)
+CU_NAME = CU_SET + 240; NAME_LEN = 24;   // per pad: character codes, 0-terminated (R12.6)
+NCF = 15;                         // numeric cue fields, 16 values each
+CUE_SIZE = 240 + NPADS * NAME_LEN;       // all cue state as one block, so undo can copy it
+OLD_NUM = 208;                    // numeric part of the block before format v10
 SEL = 1721000;                    // selection flags; not part of undo
 // undo (R19): a ring of cue-state snapshots; SEEN is the state last looked at
 SEEN = 1797000; HIST = 1800000; HSLOTS = 128;   // 127 steps back (R19.3)
@@ -54,12 +59,26 @@ HOP = 256; ONS = 1880000; ONS_MAX = 7000; AC = 1888000; AC_MAX = 2600;
 // FS marks candidates (1) and picks (2); AS_T/AS_E are the cues Auto set places
 TR = 1891000; FS = 1898000; AS_T = 1905000; AS_E = 1905020;
 metro_n = 1000000;                // no metronome click pending
+sync_r = 1;                       // until @block knows the tempo
+// Stretch, phase vocoder (R23, Melodic): 2048-point frames, 4x overlap.
+// FFTB must not cross a 65536 boundary. Per voice: last analysis and
+// output spectrum of the mid signal, and an overlap-add ring per channel.
+PV_N = 2048; PV_H = 512; PV_ACC = 8192; PV_XB = 2048;
+FFTB = 2097152; PV_WIN = 2102000; PV_MID = 2105000; PV_MAG = 2108000;
+PV_RR = 2110000; PV_RI = 2112000; PV_PK = 2114000; PV_PR = 2116000; PV_PI = 2118000;
+WINH = 2120000;                   // grains' rising half window, length g_hop
+PV_BASE = 2162688; PVS = 4100 + 2 * PV_ACC;   // per voice: XPREV at 0, YPREV at 2050, rings at 4100
+i = 0; loop(PV_N, PV_WIN[i] = 0.5 - 0.5 * cos(2 * $pi * i / PV_N); i += 1);
+// the scale of an fft/ifft round trip, measured rather than assumed
+memset(FFTB, 0, 2 * PV_N); FFTB[0] = 1;
+fft(FFTB, PV_N); fft_permute(FFTB, PV_N); fft_ipermute(FFTB, PV_N); ifft(FFTB, PV_N);
+pv_sc = 1 / (max(abs(FFTB[0]), 0.000001) * 1.5);   // 1.5: Hann squared at 4x overlap
 // voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
 // 32 plays the source itself (play/pause and lazy chop)
 NV = 33; SRC = 32;
 // One field per 40 values, so copy_voice can walk them. Positions are in
 // source frames; a voice plays between LO and HI in direction DIR.
-V_ST = 1730000; NVF = 31;
+V_ST = 1730000; NVF = 42;
 V_POS = V_ST + 40; V_HI = V_ST + 80; V_ENV = V_ST + 120;
 V_GAIN = V_ST + 160; V_ATT = V_ST + 200; V_REL = V_ST + 240; V_HELD = V_ST + 280;
 V_RELSET = V_ST + 320;            // cue release in seconds, used by Trigger mode (R15.9)
@@ -70,6 +89,12 @@ V_FON = V_ST + 600; V_FV = V_ST + 640;   // filter on; the cue value it was buil
 V_B0 = V_ST + 680; V_B1 = V_ST + 720; V_B2 = V_ST + 760; V_A1 = V_ST + 800; V_A2 = V_ST + 840;
 V_X1L = V_ST + 880; V_X2L = V_ST + 920; V_Y1L = V_ST + 960; V_Y2L = V_ST + 1000;
 V_X1R = V_ST + 1040; V_X2R = V_ST + 1080; V_Y1R = V_ST + 1120; V_Y2R = V_ST + 1160;
+// stretch (R23): source frames per output sample relative to step, and
+// which engine runs (0 plain read, 1 grains, 2 phase vocoder)
+V_TSP = V_ST + 1240; V_GON = V_ST + 1280;
+V_GO = V_ST + 1320; V_GN = V_ST + 1360; V_GP = V_ST + 1400;   // grains: old and new read position, hop phase
+V_PA = V_ST + 1440; V_PM = V_ST + 1480; V_PT = V_ST + 1520;   // vocoder: next analysis, frames made, samples read
+V_PE = V_ST + 1560; V_PX = V_ST + 1600; V_PHA = V_ST + 1640;  // last frame energy, start blend, last hop
 VS_OFF = 0; VS_ATT = 1; VS_SUS = 2; VS_REL = 3; VS_PARK = 4;
 RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 
@@ -466,6 +491,7 @@ function new_cue(p, t)
   CU_LEVEL[p] = 0; CU_ATT[p] = 0; CU_REL[p] = 0;
   CU_FILT[p] = 0; CU_REV[p] = 0; CU_KEY[p] = 0; CU_LOOP[p] = 0; CU_XF[p] = 0;   // R17.19, R17.24
   CU_FAV[p] = 0; CU_COL[p] = p; memset(CU_NAME + p * NAME_LEN, 0, NAME_LEN);
+  CU_STR[p] = 0; CU_KT[p] = 0;                                                 // R23.5, R23.6
 );
 
 function all_pads_set() local(i, n)
@@ -478,6 +504,7 @@ function all_pads_set() local(i, n)
 function copy_voice(src, dst) local(k)
 (
   k = 0; loop(NVF, V_ST[dst + k * 40] = V_ST[src + k * 40]; k += 1);
+  V_GON[src] == 2 ? memcpy(PV_BASE + dst * PVS, PV_BASE + src * PVS, PVS);
 );
 
 // Fade a voice out over n samples in a tail slot, carrying on in its current
@@ -537,6 +564,157 @@ function loop_seam(v) local(n, d, m)
     V_DIR[v] = -d;
   ) : V_POS[v] = d > 0 ? V_LO[v] : V_HI[v] - 1;   // start the pass again
   V_XG[v] = 0; V_XGI[v] = 1 / n;
+  V_GON[v] = 0;                  // a stretching voice starts its engine afresh on the new pass
+);
+
+// ---- time stretch (R23) ----
+// A voice only runs an engine while its time rate differs from its pitch
+// rate; otherwise @sample takes the plain read and none of this costs
+// anything. Reads outside lo..hi are silence, so a stretched cue never
+// plays audio beyond its own bounds.
+function st_read(pos, lo, hi) local(i, f, a)
+(
+  pos >= lo && pos < hi - 1 ? (
+    i = floor(pos); f = pos - i;
+    a = BUF[i * nch]; rd_l = a + (BUF[(i + 1) * nch] - a) * f;
+    nch > 1 ? ( a = BUF[i * nch + 1]; rd_r = a + (BUF[(i + 1) * nch + 1] - a) * f; ) : rd_r = rd_l;
+  ) : ( rd_l = 0; rd_r = 0; );
+);
+
+// sync ratio, key and the cue's own stretch combined (R23.2, R23.8, R23.9)
+function cue_tsp(p) ( sync_r * (CU_KT[p] ? 1 : V_SPD[p]) / 2 ^ CU_STR[p]; );
+
+// Drums: WSOLA. Two grains crossfade over each hop; the next grain starts
+// near where the voice should be, at the offset whose waveform best
+// matches the running grain, so transients stay single and sharp.
+function wsola_reset(v) ( V_GO[v] = V_GN[v] = V_POS[v]; V_GP[v] = 0; );
+
+function ws_corr(o, s, d) local(c, a, b)
+(
+  c = 0; a = floor(o); b = floor(s);
+  loop(ws_k,
+    a >= 0 && a < frames && b >= 0 && b < frames ? (
+      c += nch > 1 ? (BUF[a * 2] + BUF[a * 2 + 1]) * (BUF[b * 2] + BUF[b * 2 + 1]) : BUF[a] * BUF[b];
+    );
+    a += d * 8; b += d * 8;
+  );
+  c;
+);
+
+function wsola_hop(v, d, pr) local(o, span, lo, hi, t, s0, s1, s, c, best, bs, f0, f1)
+(
+  o = V_GN[v]; V_GO[v] = o;
+  // the new grain must fit inside the voice's bounds for its whole life
+  span = 2 * g_hop * pr;
+  d > 0 ? ( lo = V_LO[v]; hi = V_HI[v] - span; ) : ( lo = V_LO[v] + span; hi = V_HI[v] - 1; );
+  hi = max(lo, hi);
+  t = max(lo, min(hi, V_POS[v]));
+  s0 = max(lo, t - ws_d); s1 = min(hi, t + ws_d);
+  best = -1000000000; bs = t;
+  s = s0;
+  while (s <= s1 ? ( c = ws_corr(o, s, d); c > best ? ( best = c; bs = s; ); s += 6; 1; ) : 0);
+  f0 = max(s0, bs - 5); f1 = min(s1, bs + 5);
+  s = f0;
+  while (s <= f1 ? ( c = ws_corr(o, s, d); c > best ? ( best = c; bs = s; ); s += 1; 1; ) : 0);
+  V_GN[v] = bs;
+);
+
+// Melodic: phase vocoder with identity phase locking. Left and right go
+// through one complex FFT (L real, R imaginary); the phase is tracked on
+// their sum and the same rotation applied to both, so the stereo image
+// holds. A jump in energy resets the phases, which keeps attacks crisp.
+function pv_frame(v) local(vb, dir, pr, ha, pa, lo, hi, j, w, k, kk, za, zb, zc, zd, mr, mi, E, reset, np, i, om, dev, ang, xlr, xli, xrr, xri, rr, ri, ylr, yli, yrr, yri, base, q)
+(
+  vb = PV_BASE + v * PVS;
+  dir = V_DIR[v]; pr = step * V_SPD[v]; ha = PV_H * step * V_TSP[v];
+  pa = V_PA[v]; lo = V_LO[v]; hi = V_HI[v];
+  j = 0;
+  loop(PV_N,
+    st_read(pa + dir * j * pr, lo, hi);
+    w = PV_WIN[j];
+    FFTB[j * 2] = rd_l * w; FFTB[j * 2 + 1] = rd_r * w;
+    j += 1;
+  );
+  fft(FFTB, PV_N); fft_permute(FFTB, PV_N);
+  E = 0; k = 0;
+  loop(PV_N / 2 + 1,
+    kk = (PV_N - k) & (PV_N - 1);
+    za = FFTB[k * 2]; zb = FFTB[k * 2 + 1]; zc = FFTB[kk * 2]; zd = FFTB[kk * 2 + 1];
+    mr = (za + zc + zb + zd) * 0.5; mi = (zb - zd + zc - za) * 0.5;   // left + right
+    PV_MID[k * 2] = mr; PV_MID[k * 2 + 1] = mi;
+    PV_MAG[k] = mr * mr + mi * mi; E += PV_MAG[k];
+    k += 1;
+  );
+  reset = V_PE[v] <= 0 || E > 2 * V_PE[v];
+  V_PE[v] = E;
+  np = 0;
+  !reset ? (
+    k = 1;
+    loop(PV_N / 2 - 1,
+      PV_MAG[k] > PV_MAG[k - 1] && PV_MAG[k] >= PV_MAG[k + 1] && PV_MAG[k] > E * 0.0000001 ? ( PV_PK[np] = k; np += 1; );
+      k += 1;
+    );
+    i = 0;
+    loop(np,
+      k = PV_PK[i];
+      mr = PV_MID[k * 2]; mi = PV_MID[k * 2 + 1];
+      om = 2 * $pi * k / PV_N;
+      dev = atan2(mi * vb[k * 2] - mr * vb[k * 2 + 1], mr * vb[k * 2] + mi * vb[k * 2 + 1]) - om * V_PHA[v];
+      dev -= 2 * $pi * floor((dev + $pi) / (2 * $pi));
+      ang = atan2(vb[2051 + k * 2], vb[2050 + k * 2]) + (om + dev / V_PHA[v]) * PV_H - atan2(mi, mr);
+      PV_PR[i] = cos(ang); PV_PI[i] = sin(ang);
+      i += 1;
+    );
+  );
+  // every bin turns with the peak of its region
+  i = 0; k = 0;
+  loop(PV_N / 2 + 1,
+    np ? (
+      while (i < np - 1 && k > (PV_PK[i] + PV_PK[i + 1]) * 0.5 ? ( i += 1; 1; ) : 0);
+      PV_RR[k] = PV_PR[i]; PV_RI[k] = PV_PI[i];
+    ) : ( PV_RR[k] = 1; PV_RI[k] = 0; );
+    k += 1;
+  );
+  PV_RR[0] = 1; PV_RI[0] = 0; PV_RR[PV_N / 2] = 1; PV_RI[PV_N / 2] = 0;
+  k = 0;
+  loop(PV_N / 2 + 1,
+    kk = (PV_N - k) & (PV_N - 1);
+    za = FFTB[k * 2]; zb = FFTB[k * 2 + 1]; zc = FFTB[kk * 2]; zd = FFTB[kk * 2 + 1];
+    xlr = (za + zc) * 0.5; xli = (zb - zd) * 0.5; xrr = (zb + zd) * 0.5; xri = (zc - za) * 0.5;
+    rr = PV_RR[k]; ri = PV_RI[k];
+    ylr = xlr * rr - xli * ri; yli = xlr * ri + xli * rr;
+    yrr = xrr * rr - xri * ri; yri = xrr * ri + xri * rr;
+    FFTB[k * 2] = ylr - yri; FFTB[k * 2 + 1] = yli + yrr;
+    k > 0 && k < PV_N / 2 ? ( FFTB[kk * 2] = ylr + yri; FFTB[kk * 2 + 1] = yrr - yli; );
+    mr = PV_MID[k * 2]; mi = PV_MID[k * 2 + 1];
+    vb[k * 2] = mr; vb[k * 2 + 1] = mi;
+    vb[2050 + k * 2] = mr * rr - mi * ri; vb[2051 + k * 2] = mr * ri + mi * rr;
+    k += 1;
+  );
+  fft_ipermute(FFTB, PV_N); ifft(FFTB, PV_N);
+  base = V_PM[v] * PV_H;
+  j = 0;
+  loop(PV_N,
+    q = (base + j) & (PV_ACC - 1);
+    w = PV_WIN[j] * pv_sc;
+    vb[4100 + q] += FFTB[j * 2] * w; vb[4100 + PV_ACC + q] += FFTB[j * 2 + 1] * w;
+    j += 1;
+  );
+  V_PHA[v] = ha / pr;            // the hop to the next frame, in the pitch-shifted signal
+  V_PM[v] += 1;
+  V_PA[v] = pa + dir * ha;
+);
+
+// Three frames before the start read silence (outside the cue), so the
+// overlap-add is complete at the first sample; the first 46 ms blend in
+// from a plain read so the attack plays untouched.
+function pv_reset(v)
+(
+  memset(PV_BASE + v * PVS + 4100, 0, 2 * PV_ACC);
+  V_PA[v] = V_POS[v] - V_DIR[v] * 3 * PV_H * step * V_TSP[v];
+  V_PM[v] = 0; V_PT[v] = 3 * PV_H; V_PE[v] = 0; V_PX[v] = 0; V_GO[v] = V_POS[v];
+  V_PHA[v] = PV_H * V_TSP[v] / V_SPD[v];
+  loop(4, pv_frame(v));
 );
 
 // the source player: plays from a position to the section end (R6.1)
@@ -546,6 +724,7 @@ function src_start(pos)
   V_POS[SRC] = max(0, min(pos, frames - 1));
   V_LO[SRC] = 0; V_HI[SRC] = frames;
   V_DIR[SRC] = V_PDIR[SRC] = 1; V_SPD[SRC] = 1; V_XG[SRC] = 1; V_FON[SRC] = 0;
+  V_TSP[SRC] = sync_r; V_GON[SRC] = 0;                    // R23.2: the source follows Sync too
   V_ENV[SRC] = 0; V_ATT[SRC] = 1 / ramp_n; V_RELSET[SRC] = 0;
   V_GAIN[SRC] = 1; V_HELD[SRC] = 0;
   V_ST[SRC] = VS_ATT;
@@ -584,6 +763,7 @@ function play_cue(p, vel) local(i)
   V_DIR[p] = V_PDIR[p] = CU_REV[p] ? -1 : 1;
   V_POS[p] = CU_REV[p] ? V_HI[p] - 1 : V_LO[p];
   V_SPD[p] = 2 ^ (CU_KEY[p] / 12);                        // R17.8
+  V_TSP[p] = cue_tsp(p); V_GON[p] = 0;                    // R23
   V_XG[p] = 1; V_XGI[p] = 0;
   V_FON[p] = 0; set_filter(p, CU_FILT[p]);
   V_ENV[p] = 0;
@@ -1025,13 +1205,15 @@ function clamp_params(p)
   CU_FILT[p] = max(-1, min(1, CU_FILT[p]));
   CU_KEY[p] = max(-24, min(24, floor(CU_KEY[p] + 0.5)));
   CU_XF[p] = max(0, min(cue_end(p) - CU_START[p], CU_XF[p]));
+  CU_STR[p] = max(-2, min(2, CU_STR[p]));                 // R23.5
 );
 
 function reset_param(k, p)       // R17.9, R21.6: k as in the parameter row
 (
   k == 0 ? CU_LEVEL[p] = 0 : k == 1 ? CU_ATT[p] = 0 : k == 2 ? CU_REL[p] = 0
   : k == 3 ? CU_FILT[p] = 0 : k == 4 ? CU_KEY[p] = 0 : k == 5 ? CU_REV[p] = 0
-  : k == 6 ? CU_LOOP[p] = 0 : CU_XF[p] = 0;
+  : k == 6 ? CU_LOOP[p] = 0 : k == 7 ? CU_XF[p] = 0
+  : k == 8 ? CU_STR[p] = 0 : CU_KT[p] = 0;
 );
 
 // one step = 1/100 of the main waveform's span (Terms); the window keeps
@@ -1333,6 +1515,28 @@ ana_cancel_req = 0;
 ramp_n = max(1, floor(RAMP_S * srate));
 step = fsr / srate;               // play at the file's own rate
 
+// Sync (R23.2-R23.4): project tempo over the source's; no grid, no change
+sync_r = slider7 && has_grid && tempo > 0 ? tempo / bpm : 1;
+i = 0; loop(NPADS, V_ST[i] != VS_OFF ? V_TSP[i] = cue_tsp(i); i += 1);   // R23.3: follows tempo changes
+V_ST[SRC] != VS_OFF ? V_TSP[SRC] = sync_r;
+// grain sizes for this rate
+g_hop != floor(0.025 * srate) ? (
+  g_hop = floor(0.025 * srate);
+  i = 0; loop(g_hop, WINH[i] = sqr(sin($pi / 2 * i / g_hop)); i += 1);
+);
+ws_d = floor(0.008 * fsr); ws_k = floor(0.008 * fsr / 8);
+// vocoder frames for this block, made here so @sample stays even; only
+// voices running the vocoder pay for it
+state == S_READY ? (
+  i = 0;
+  loop(NV,
+    V_GON[i] == 2 && V_ST[i] != VS_OFF && V_ST[i] != VS_PARK ? (
+      while (V_PM[i] * PV_H - V_PT[i] < samplesblock + PV_H && V_PM[i] * PV_H + PV_N <= V_PT[i] + PV_ACC ? ( pv_frame(i); 1; ) : 0);
+    );
+    i += 1;
+  );
+);
+
 // requests from the window, applied here so only the audio thread touches voices
 state == S_READY ? (                                      // R6.7: ignored without a source
   play_req ? ( src_playing ? src_stop() : src_start(ph); );
@@ -1403,12 +1607,34 @@ state == S_READY ? (
     st != VS_OFF && st != VS_PARK ? (
       pos = V_POS[v];
       d = V_DIR[v];
-      spd = step * V_SPD[v];
       looping = v < NPADS && CU_LOOP[v];                  // tails and the source never loop
-      idx = max(0, min(floor(pos), frames - 1)); fr = pos - floor(pos);
-      nxt = min(idx + 1, frames - 1);
-      a = BUF[idx * nch]; l = a + (BUF[nxt * nch] - a) * fr;
-      nch > 1 ? ( a = BUF[idx * nch + 1]; r = a + (BUF[nxt * nch + 1] - a) * fr; ) : r = l;  // R15.15
+      // R23: an engine only while time and pitch rates differ
+      st_gm = abs(V_TSP[v] - V_SPD[v]) > 0.000001 ? 1 + slider8 : 0;
+      st_gm != V_GON[v] ? ( V_GON[v] = st_gm; st_gm == 1 ? wsola_reset(v) : st_gm == 2 ? pv_reset(v); );
+      st_pr = step * V_SPD[v];
+      spd = st_gm ? step * V_TSP[v] : st_pr;
+      st_gm == 0 ? (
+        idx = max(0, min(floor(pos), frames - 1)); fr = pos - floor(pos);
+        nxt = min(idx + 1, frames - 1);
+        a = BUF[idx * nch]; l = a + (BUF[nxt * nch] - a) * fr;
+        nch > 1 ? ( a = BUF[idx * nch + 1]; r = a + (BUF[nxt * nch + 1] - a) * fr; ) : r = l;  // R15.15
+      ) : st_gm == 1 ? (
+        V_GP[v] >= g_hop ? ( wsola_hop(v, d, st_pr); V_GP[v] = 0; );
+        st_w = WINH[V_GP[v]];
+        st_read(V_GO[v], V_LO[v], V_HI[v]); l = rd_l; r = rd_r;
+        st_read(V_GN[v], V_LO[v], V_HI[v]); l += (rd_l - l) * st_w; r += (rd_r - r) * st_w;
+        V_GO[v] += d * st_pr; V_GN[v] += d * st_pr; V_GP[v] += 1;
+      ) : (
+        V_PT[v] >= V_PM[v] * PV_H ? pv_frame(v);          // only if @block fell behind
+        st_pb = PV_BASE + v * PVS + 4100; st_q = V_PT[v] & (PV_ACC - 1);
+        l = st_pb[st_q]; r = st_pb[PV_ACC + st_q]; st_pb[st_q] = 0; st_pb[PV_ACC + st_q] = 0;
+        V_PT[v] += 1;
+        V_PX[v] < PV_XB ? (
+          st_read(V_GO[v], V_LO[v], V_HI[v]); st_w = V_PX[v] / PV_XB;
+          l = rd_l + (l - rd_l) * st_w; r = rd_r + (r - rd_r) * st_w;
+          V_GO[v] += d * st_pr; V_PX[v] += 1;
+        );
+      );
 
       V_FON[v] ? (
         a = V_B0[v] * l + V_B1[v] * V_X1L[v] + V_B2[v] * V_X2L[v] - V_A1[v] * V_Y1L[v] - V_A2[v] * V_Y2L[v];
@@ -1494,13 +1720,17 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 9 ? (
+  ser_ver >= 1 && ser_ver <= 10 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
     file_var(0, ser_has);
-    ser_ver >= 7 ? (
+    memset(CU_STR, 0, 2 * NPADS);                         // no stretch before v10
+    ser_ver >= 10 ? (
       i = 0; loop(CUE_SIZE, file_var(0, CU_SET[i]); i += 1);
+    ) : ser_ver >= 7 ? (
+      i = 0; loop(OLD_NUM, file_var(0, CU_SET[i]); i += 1);
+      i = 0; loop(NPADS * NAME_LEN, file_var(0, CU_NAME[i]); i += 1);
     ) : ser_ver >= 2 ? (
       memset(CU_FAV, 0, NPADS); memset(CU_NAME, 0, NPADS * NAME_LEN);
       i = 0; loop(NPADS, CU_COL[i] = i; i += 1);
@@ -1554,7 +1784,7 @@ file_avail(0) >= 0 ? (
     hist_reset();
   );
 ) : (
-  ser_ver = 9;
+  ser_ver = 10;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -1593,13 +1823,15 @@ function fmt_time(t) ( t < 1 ? sprintf(#pv, "%d ms", floor(t * 1000 + 0.5)) : sp
 function param_label(k)
 (
   k == 0 ? "Level" : k == 1 ? "Attack" : k == 2 ? "Release" : k == 3 ? "Filter"
-  : k == 4 ? "Key" : k == 5 ? "Reverse" : k == 6 ? "Loop" : "Crossfade";
+  : k == 4 ? "Key" : k == 5 ? "Reverse" : k == 6 ? "Loop" : k == 7 ? "Crossfade"
+  : k == 8 ? "Stretch" : "Keep tempo";
 );
 
 function param_val(k, p)
 (
   k == 0 ? CU_LEVEL[p] : k == 1 ? CU_ATT[p] : k == 2 ? CU_REL[p] : k == 3 ? CU_FILT[p]
-  : k == 4 ? CU_KEY[p] : k == 5 ? CU_REV[p] : k == 6 ? CU_LOOP[p] : CU_XF[p];
+  : k == 4 ? CU_KEY[p] : k == 5 ? CU_REV[p] : k == 6 ? CU_LOOP[p] : k == 7 ? CU_XF[p]
+  : k == 8 ? CU_STR[p] : CU_KT[p];
 );
 
 // several cues selected: their shared value, or the default (0 for every
@@ -1621,7 +1853,8 @@ function param_text(k, v) local(fc)
     : sprintf(#pv, fc < 1000 ? "%s %.0f Hz" : "%s %.1f kHz", v < 0 ? "LP" : "HP", fc < 1000 ? fc : fc / 1000);
   )
   : k == 4 ? sprintf(#pv, "%+d st", v)
-  : k == 5 ? strcpy(#pv, v ? "on" : "off")
+  : k == 5 || k == 9 ? strcpy(#pv, v ? "on" : "off")
+  : k == 8 ? sprintf(#pv, "%.2fx", 2 ^ v)
   : strcpy(#pv, v == 1 ? "forward" : v == 2 ? "backward" : v == 3 ? "alternate" : "off");
 );
 
@@ -1651,6 +1884,7 @@ function drag_param(k, p, px, n) local(u, len)
     abs(CU_FILT[p]) < 0.003 ? CU_FILT[p] = 0;           // passing the centre lands on off
   )
   : k == 4 ? CU_KEY[p] += n      // whole semitones, counted by the caller (R17.8)
+  : k == 8 ? CU_STR[p] += px * 0.01                     // 100 px per doubling (R23.5)
   : k == 7 ? (
     len = cue_end(p) - CU_START[p];
     len > 0 ? ( u = min(1, max(0, CU_XF[p] / len + px * 0.004)); CU_XF[p] = len * u; );
@@ -1775,6 +2009,9 @@ has_source ? (
   state == S_READY ? (
     hx = gfx_w - pad - 70 - 16 - 84;
     button(hx, 13, 84, 26, "Quantize", slider6) ? ( slider6 = !slider6; slider_automate(slider6); );   // R10.10
+    hx -= 64; button(hx, 13, 58, 26, "Sync", slider7) ? ( slider7 = !slider7; slider_automate(slider7); );   // R23.2
+    hx -= 80; button(hx, 13, 74, 26, slider8 ? "Melodic" : "Drums", 0) ? ( slider8 = !slider8; slider_automate(slider8); );   // R23.11
+    hx -= 10;
     ana_state ? (
       hx -= 76; button(hx, 13, 70, 26, "Cancel", 0) ? ana_cancel_req = 1;                             // R4.4
       rgb(C_DIM); sprintf(#t, "Analysing %d%%", floor(ana_progress() * 100));                          // R4.3
@@ -1786,8 +2023,8 @@ has_source ? (
       );
       hx -= 40; button(hx, 13, 34, 26, "x2", 0) && has_grid ? set_bpm(bpm * 2);                         // R6.6
       hx -= 40; button(hx, 13, 34, 26, "/2", 0) && has_grid ? set_bpm(bpm / 2);
-      gfx_setfont(1, "Arial", 17); rgb(has_grid ? C_TEXT : C_DIM);
-      has_grid ? sprintf(#t, "%.2f BPM", bpm) : strcpy(#t, "--- BPM");                                  // R6.5, R4.7
+      gfx_setfont(1, "Arial", 17); rgb(has_grid ? C_TEXT : slider7 ? C_WARN : C_DIM);
+      has_grid ? sprintf(#t, "%.2f BPM", bpm) : strcpy(#t, slider7 ? "Sync needs a tempo" : "--- BPM");   // R6.5, R4.7, R23.4
       gfx_measurestr(#t, tw, th); text_at(hx - tw - 14, 17, #t);
       gfx_setfont(2, "Arial", 13);
     );
@@ -2085,13 +2322,13 @@ button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 // or down to change, Cmd/Ctrl for fine steps (R17.10), Alt-click resets
 // (R17.9); Reverse toggles and Loop steps through its modes on a click.
 row_y = bar_y + bh + 10; row_h = 40; row_gap = 6;
-pw = floor((gfx_w - 2 * pad - 7 * row_gap) / 8);
+pw = floor((gfx_w - 2 * pad - 9 * row_gap) / 10);
 // Several selected cues all change together (R17.14).
 nsel = sel_count();
 has_sel = state == S_READY && nsel > 0 && selected >= 0;
 ge_on ? grid_row() : (
 k = 0;
-loop(8,
+loop(10,
   px0 = pad + k * (pw + row_gap);
   rgb(C_PANEL); gfx_rect(px0, row_y, pw, row_h);
   has_sel ? ( rgb(nsel == 1 ? PALETTE[CU_COL[selected]] : C_TEXT); gfx_rect(px0, row_y, pw, 2); );
@@ -2105,11 +2342,12 @@ loop(8,
       is_sel(q) ? (
         mouse_cap & 16 ? reset_param(k, q)
         : k == 5 ? CU_REV[q] = !v
-        : k == 6 ? CU_LOOP[q] = (v + 1) % 4;
+        : k == 6 ? CU_LOOP[q] = (v + 1) % 4
+        : k == 9 ? CU_KT[q] = !v;                         // R23.6
       );
       q += 1;
     );
-    !(mouse_cap & 16) && k != 5 && k != 6 ? ( drag_mode = 5; drag_param_k = k; drag_y = mouse_y; key_acc = 0; );
+    !(mouse_cap & 16) && k != 5 && k != 6 && k != 9 ? ( drag_mode = 5; drag_param_k = k; drag_y = mouse_y; key_acc = 0; );
   );
   k += 1;
 );
