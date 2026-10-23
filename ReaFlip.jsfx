@@ -36,12 +36,25 @@ NPADS = 16;
 // cues, one entry per pad; positions in seconds of the loaded section
 CU_SET = 1720000; CU_START = CU_SET + 16; CU_END = CU_SET + 32;   // CU_END < 0 = no end set
 CU_LEVEL = CU_SET + 48; CU_ATT = CU_SET + 64; CU_REL = CU_SET + 80; // dB, seconds, seconds
+CU_FILT = CU_SET + 96;            // -1 low-pass .. 0 off .. +1 high-pass (R17.4-R17.6)
+CU_REV = CU_SET + 112; CU_KEY = CU_SET + 128;   // 0/1; semitones -24..24
+CU_LOOP = CU_SET + 144; CU_XF = CU_SET + 160;   // 0 off, 1 forward, 2 backward, 3 alternate; seconds
 // voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
 // 32 plays the source itself (play/pause and lazy chop)
 NV = 33; SRC = 32;
-V_ST = 1730000; V_POS = V_ST + 40; V_END = V_ST + 80; V_ENV = V_ST + 120;
+// One field per 40 values, so copy_voice can walk them. Positions are in
+// source frames; a voice plays between LO and HI in direction DIR.
+V_ST = 1730000; NVF = 31;
+V_POS = V_ST + 40; V_HI = V_ST + 80; V_ENV = V_ST + 120;
 V_GAIN = V_ST + 160; V_ATT = V_ST + 200; V_REL = V_ST + 240; V_HELD = V_ST + 280;
 V_RELSET = V_ST + 320;            // cue release in seconds, used by Trigger mode (R15.9)
+V_LO = V_ST + 360; V_DIR = V_ST + 400; V_PDIR = V_ST + 440;  // current and playing direction
+V_SPD = V_ST + 480;               // key shift as a speed ratio (R17.8)
+V_XG = V_ST + 520; V_XGI = V_ST + 560;   // loop crossfade fade-in gain and its increment
+V_FON = V_ST + 600; V_FV = V_ST + 640;   // filter on; the cue value it was built from
+V_B0 = V_ST + 680; V_B1 = V_ST + 720; V_B2 = V_ST + 760; V_A1 = V_ST + 800; V_A2 = V_ST + 840;
+V_X1L = V_ST + 880; V_X2L = V_ST + 920; V_Y1L = V_ST + 960; V_Y2L = V_ST + 1000;
+V_X1R = V_ST + 1040; V_X2R = V_ST + 1080; V_Y1R = V_ST + 1120; V_Y2R = V_ST + 1160;
 VS_OFF = 0; VS_ATT = 1; VS_SUS = 2; VS_REL = 3; VS_PARK = 4;
 RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 
@@ -107,6 +120,8 @@ function reset_cues()
   memset(CU_LEVEL, 0, NPADS);
   memset(CU_ATT, 0, NPADS);
   memset(CU_REL, 0, NPADS);
+  memset(CU_FILT, 0, NPADS); memset(CU_REV, 0, NPADS); memset(CU_KEY, 0, NPADS);
+  memset(CU_LOOP, 0, NPADS); memset(CU_XF, 0, NPADS);
   selected = -1;
 );
 
@@ -280,6 +295,7 @@ function new_cue(p, t)
   // R9.11: default parameters, no end point
   CU_SET[p] = 1; CU_START[p] = t; CU_END[p] = -1;
   CU_LEVEL[p] = 0; CU_ATT[p] = 0; CU_REL[p] = 0;
+  CU_FILT[p] = 0; CU_REV[p] = 0; CU_KEY[p] = 0; CU_LOOP[p] = 0; CU_XF[p] = 0;   // R17.19, R17.24
 );
 
 function all_pads_set() local(i, n)
@@ -289,20 +305,68 @@ function all_pads_set() local(i, n)
   n == NPADS;
 );
 
+function copy_voice(src, dst) local(k)
+(
+  k = 0; loop(NVF, V_ST[dst + k * 40] = V_ST[src + k * 40]; k += 1);
+);
+
+// Fade a voice out over n samples in a tail slot, carrying on in its current
+// direction past its bounds, with its filter state, so nothing clicks.
+function to_tail(v, n) local(t)
+(
+  t = NPADS + tail_next;
+  tail_next = (tail_next + 1) % NPADS;
+  copy_voice(v, t);
+  V_LO[t] = 0; V_HI[t] = frames - 1; V_HELD[t] = 0;
+  V_REL[t] = V_ENV[v] / max(n, 1);
+  V_ST[t] = VS_REL;
+);
+
 // Hand a sounding voice over to a tail slot that fades it out, so a
 // retrigger, seek or Mono steal never clicks (R15.11, R15.12, R16.2).
-function cut(v) local(t)
+function cut(v)
 (
-  V_ST[v] != VS_OFF && V_ST[v] != VS_PARK && V_ENV[v] > 0 ? (
-    t = NPADS + tail_next;
-    tail_next = (tail_next + 1) % NPADS;
-    V_POS[t] = V_POS[v]; V_END[t] = V_END[v]; V_ENV[t] = V_ENV[v];
-    V_GAIN[t] = V_GAIN[v]; V_HELD[t] = 0;
-    V_REL[t] = V_ENV[v] / ramp_n;
-    V_ST[t] = VS_REL;
-  );
+  V_ST[v] != VS_OFF && V_ST[v] != VS_PARK && V_ENV[v] > 0 ? to_tail(v, ramp_n);
   V_ST[v] = VS_OFF;
   V_ENV[v] = 0;
+);
+
+// cutoff for a filter setting: 17 kHz at the centre, 80 Hz at either end,
+// on a log scale (R17.4, R17.5)
+function filter_fc(f) ( f < 0 ? 17000 * (80 / 17000) ^ -f : 80 * (17000 / 80) ^ f; );
+
+// RBJ biquad, Q 0.707; a voice starting or coming back from off starts clean
+function set_filter(v, f) local(w, c, al, a0)
+(
+  V_FV[v] = f;
+  f == 0 ? V_FON[v] = 0 : (
+    w = 2 * $pi * min(filter_fc(f), srate * 0.45) / srate;
+    c = cos(w); al = sin(w) / (2 * 0.7071); a0 = 1 + al;
+    f < 0 ? ( V_B0[v] = (1 - c) / 2 / a0; V_B1[v] = (1 - c) / a0; )
+          : ( V_B0[v] = (1 + c) / 2 / a0; V_B1[v] = -(1 + c) / a0; );
+    V_B2[v] = V_B0[v]; V_A1[v] = -2 * c / a0; V_A2[v] = (1 - al) / a0;
+    !V_FON[v] ? (
+      V_X1L[v] = V_X2L[v] = V_Y1L[v] = V_Y2L[v] = 0;
+      V_X1R[v] = V_X2R[v] = V_Y1R[v] = V_Y2R[v] = 0;
+    );
+    V_FON[v] = 1;
+  );
+);
+
+// A looping cue reached the end of a pass (R17.20-R17.23): the old
+// direction fades out in a tail while the next pass fades in, over the
+// loop crossfade (at least the click-free ramp, R15.12).
+function loop_seam(v) local(n, d, m)
+(
+  d = V_DIR[v]; m = CU_LOOP[v];
+  n = max(min(CU_XF[v], (V_HI[v] - V_LO[v]) / fsr) * srate, ramp_n);
+  to_tail(v, n);
+  m == 3 || (m == 2 && d == V_PDIR[v]) ? (
+    // alternate turns at every seam; backward turns once, after the first pass
+    V_POS[v] = d > 0 ? V_HI[v] - 1 : V_LO[v];
+    V_DIR[v] = -d;
+  ) : V_POS[v] = d > 0 ? V_LO[v] : V_HI[v] - 1;   // start the pass again
+  V_XG[v] = 0; V_XGI[v] = 1 / n;
 );
 
 // the source player: plays from a position to the section end (R6.1)
@@ -310,7 +374,8 @@ function src_start(pos)
 (
   cut(SRC);
   V_POS[SRC] = max(0, min(pos, frames - 1));
-  V_END[SRC] = frames;
+  V_LO[SRC] = 0; V_HI[SRC] = frames;
+  V_DIR[SRC] = V_PDIR[SRC] = 1; V_SPD[SRC] = 1; V_XG[SRC] = 1; V_FON[SRC] = 0;
   V_ENV[SRC] = 0; V_ATT[SRC] = 1 / ramp_n; V_RELSET[SRC] = 0;
   V_GAIN[SRC] = 1; V_HELD[SRC] = 0;
   V_ST[SRC] = VS_ATT;
@@ -343,8 +408,14 @@ function play_cue(p, vel) local(i)
     loop(NPADS, i != p ? cut(i); i += 1);
   );
   cut(p);                        // R15.11: restart from the start
-  V_POS[p] = CU_START[p] * fsr;
-  V_END[p] = cue_end(p) * fsr;
+  V_LO[p] = CU_START[p] * fsr;
+  V_HI[p] = cue_end(p) * fsr;
+  // R17.7, R17.26: a reversed cue plays from its end towards its start
+  V_DIR[p] = V_PDIR[p] = CU_REV[p] ? -1 : 1;
+  V_POS[p] = CU_REV[p] ? V_HI[p] - 1 : V_LO[p];
+  V_SPD[p] = 2 ^ (CU_KEY[p] / 12);                        // R17.8
+  V_XG[p] = 1; V_XGI[p] = 0;
+  V_FON[p] = 0; set_filter(p, CU_FILT[p]);
   V_ENV[p] = 0;
   V_ATT[p] = 1 / max(CU_ATT[p] * srate, ramp_n);
   V_RELSET[p] = CU_REL[p];
@@ -371,6 +442,11 @@ function pad_press(p, vel)
       );
     ) : lazy_pass ? (
       seek(CU_START[p] * fsr);                            // R9.7
+      selected = p;
+    ) : slider2 == 1 && CU_LOOP[p] && (V_ST[p] == VS_ATT || V_ST[p] == VS_SUS) ? (
+      // R15.18: in Trigger mode a second press ends a looping cue
+      V_REL[p] = V_ENV[p] / max(CU_REL[p] * srate, ramp_n);
+      V_ST[p] = VS_REL;
       selected = p;
     ) : (
       play_cue(p, vel);
@@ -635,6 +711,25 @@ function rel_delta(k, v) local(d)
   );
 );
 
+// R17.17: every parameter is held at its range limit; R17.27: the loop
+// crossfade never exceeds the cue
+function clamp_params(p)
+(
+  CU_LEVEL[p] = max(-12, min(12, CU_LEVEL[p]));
+  CU_ATT[p] = max(0, min(10, CU_ATT[p]));
+  CU_REL[p] = max(0, min(10, CU_REL[p]));
+  CU_FILT[p] = max(-1, min(1, CU_FILT[p]));
+  CU_KEY[p] = max(-24, min(24, floor(CU_KEY[p] + 0.5)));
+  CU_XF[p] = max(0, min(cue_end(p) - CU_START[p], CU_XF[p]));
+);
+
+function reset_param(k, p)       // R17.9, R21.6: k as in the parameter row
+(
+  k == 0 ? CU_LEVEL[p] = 0 : k == 1 ? CU_ATT[p] = 0 : k == 2 ? CU_REL[p] = 0
+  : k == 3 ? CU_FILT[p] = 0 : k == 4 ? CU_KEY[p] = 0 : k == 5 ? CU_REV[p] = 0
+  : k == 6 ? CU_LOOP[p] = 0 : CU_XF[p] = 0;
+);
+
 // one step = 1/100 of the main waveform's span (Terms); the window keeps
 // step_len current, a closed window falls back to the whole section
 function edit_step() ( step_len > 0 ? step_len : sec_len / 100; );
@@ -645,12 +740,14 @@ function set_start(p, t)
 (
   t = min(t, (CU_END[p] >= 0 ? CU_END[p] : sec_len) - edit_step());
   CU_START[p] = max(0, t);
+  clamp_params(p);
 );
 
 function set_end(p, t)
 (
   CU_END[p] < 0 ? CU_END[p] = cue_end(p);
   CU_END[p] = max(min(sec_len, t), CU_START[p] + edit_step());
+  clamp_params(p);
 );
 
 function nudge_time(t, d) local(sz)
@@ -661,7 +758,7 @@ function nudge_time(t, d) local(sz)
 
 function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );
 
-function slab_control(k, val) local(d, i, pr)
+function slab_control(k, val) local(d, i, pr, f)
 (
   step_kind(k) == 1 ? (
     d = rel_delta(k, val);
@@ -672,16 +769,28 @@ function slab_control(k, val) local(d, i, pr)
       );
     ) : (
       i = k - L_ENC1;
-      i == 3 ? later(k) : has_target() ? (
-        i == 0 ? CU_ATT[selected] = nudge_time(CU_ATT[selected], d)         // R21.2
-        : i == 1 ? CU_REL[selected] = nudge_time(CU_REL[selected], d)       // R21.3
-        : CU_LEVEL[selected] = max(-12, min(12, CU_LEVEL[selected] + d * 0.5));  // R21.4
+      has_target() ? (
+        i == 0 ? CU_LEVEL[selected] += d * 0.5                              // R21.2
+        : i == 1 ? (                                                        // R21.3
+          f = CU_FILT[selected] + d * 0.02;
+          // crossing the centre stops at off, so it can be found by feel (R17.6)
+          CU_FILT[selected] != 0 && (f < 0) != (CU_FILT[selected] < 0) ? f = 0;
+          CU_FILT[selected] = f;
+        )
+        : i == 2 ? CU_ATT[selected] = nudge_time(CU_ATT[selected], d)       // R21.4
+        : CU_KEY[selected] += d;                                            // R21.5
+        clamp_params(selected);
       );
     );
   ) : k == L_STRIP ? (
-    strip_mode == 1 ? (
-      has_target() ? CU_LEVEL[selected] = -12 + 24 * val / 127;              // R21.18
-    ) : say(strip_mode == 0 ? "Touch strip filter: comes with slice 5." : "Touch strip crossfade: comes with slice 5.");
+    has_target() ? (
+      strip_mode == 0 ? (
+        CU_FILT[selected] = val / 127 * 2 - 1;                               // R21.17
+        abs(CU_FILT[selected]) < 0.04 ? CU_FILT[selected] = 0;               // a centre you can hit (R17.6)
+      ) : strip_mode == 1 ? CU_LEVEL[selected] = -12 + 24 * val / 127        // R21.18
+      : CU_XF[selected] = (cue_end(selected) - CU_START[selected]) * val / 127;   // R21.26
+      clamp_params(selected);
+    );
   ) : (
     pr = val > 0;
     k == L_SHIFT ? slab_shift = pr
@@ -698,9 +807,9 @@ function slab_control(k, val) local(d, i, pr)
         say(strip_mode == 0 ? "Touch strip: filter" : strip_mode == 1 ? "Touch strip: pad level" : "Touch strip: loop crossfade");
       ) : k >= L_ENC1P && k < L_ENC1P + 4 ? (
         i = k - L_ENC1P;                                                     // R21.6
-        i == 3 ? later(k) : has_target() ? (
-          i == 0 ? CU_ATT[selected] = 0 : i == 1 ? CU_REL[selected] = 0 : CU_LEVEL[selected] = 0;
-        );
+        has_target() ? reset_param(i == 0 ? 0 : i == 1 ? 3 : i == 2 ? 1 : 4, selected);
+      ) : k == L_NOTEREP ? (
+        has_target() ? CU_LOOP[selected] = (CU_LOOP[selected] + 1) % 4;      // R21.25
       ) : k == L_LEFT || k == L_RIGHT ? (
         say("Arrows need the beatgrid: comes with slice 5.");
       ) : later(k);
@@ -778,6 +887,13 @@ state == S_READY ? (                                      // R6.7: ignored witho
 );
 play_req = 0; seek_req = 0; del_req = 0;
 
+// a filter moved while its cue sounds follows at once (R21.17)
+i = 0;
+loop(NPADS,
+  V_ST[i] != VS_OFF && V_FV[i] != CU_FILT[i] ? set_filter(i, CU_FILT[i]);
+  i += 1;
+);
+
 // Learn (R20): start, skip an optional step, cancel, confirm
 learn_req == 1 ? (
   all_voices_off();              // their note-offs would go to Learn instead
@@ -819,18 +935,31 @@ state == S_READY ? (
     st = V_ST[v];
     st != VS_OFF && st != VS_PARK ? (
       pos = V_POS[v];
-      idx = floor(pos); fr = pos - idx;
+      d = V_DIR[v];
+      spd = step * V_SPD[v];
+      looping = v < NPADS && CU_LOOP[v];                  // tails and the source never loop
+      idx = max(0, min(floor(pos), frames - 1)); fr = pos - floor(pos);
       nxt = min(idx + 1, frames - 1);
       a = BUF[idx * nch]; l = a + (BUF[nxt * nch] - a) * fr;
       nch > 1 ? ( a = BUF[idx * nch + 1]; r = a + (BUF[nxt * nch + 1] - a) * fr; ) : r = l;  // R15.15
+
+      V_FON[v] ? (
+        a = V_B0[v] * l + V_B1[v] * V_X1L[v] + V_B2[v] * V_X2L[v] - V_A1[v] * V_Y1L[v] - V_A2[v] * V_Y2L[v];
+        V_X2L[v] = V_X1L[v]; V_X1L[v] = l; V_Y2L[v] = V_Y1L[v]; V_Y1L[v] = a; l = a;
+        nch > 1 ? (
+          a = V_B0[v] * r + V_B1[v] * V_X1R[v] + V_B2[v] * V_X2R[v] - V_A1[v] * V_Y1R[v] - V_A2[v] * V_Y2R[v];
+          V_X2R[v] = V_X1R[v]; V_X1R[v] = r; V_Y2R[v] = V_Y1R[v]; V_Y1R[v] = a; r = a;
+        ) : r = l;
+      );
 
       st == VS_ATT ? (
         V_ENV[v] += V_ATT[v];
         V_ENV[v] >= 1 ? (
           V_ENV[v] = 1;
           V_ST[v] = VS_SUS;
-          // R15.9: in Trigger mode a set release starts once the attack is done
-          slider2 == 1 && V_RELSET[v] > 0 ? (
+          // R15.9: in Trigger mode a set release starts once the attack is
+          // done; a looping cue waits for its second press instead (R15.17)
+          slider2 == 1 && V_RELSET[v] > 0 && !looping ? (
             V_REL[v] = 1 / max(V_RELSET[v] * srate, ramp_n);
             V_ST[v] = VS_REL;
           );
@@ -839,10 +968,10 @@ state == S_READY ? (
         V_ENV[v] -= V_REL[v];
       );
 
-      // reach silence exactly at the cue end instead of cutting; a slower
-      // release already running is sped up just enough
-      rem = (V_END[v] - pos) / step;
-      rem <= ramp_n ? (
+      // reach silence exactly at the cue's far end instead of cutting; a
+      // slower release already running is sped up just enough
+      rem = (d > 0 ? V_HI[v] - pos : pos - V_LO[v]) / spd;
+      !looping && rem <= ramp_n ? (
         need = V_ENV[v] / max(rem, 1);
         V_ST[v] != VS_REL || V_REL[v] < need ? (
           V_REL[v] = need;
@@ -850,14 +979,16 @@ state == S_READY ? (
         );
       );
 
-      g = max(V_ENV[v], 0) * V_GAIN[v];
+      V_XG[v] < 1 ? V_XG[v] = min(1, V_XG[v] + V_XGI[v]);
+      g = max(V_ENV[v], 0) * V_GAIN[v] * V_XG[v];
       out_l += l * g; out_r += r * g;
-      V_POS[v] = pos + step;
+      V_POS[v] = pos + d * spd;
 
-      V_ENV[v] <= 0 || V_POS[v] >= V_END[v] ? (
+      looping && V_ENV[v] > 0 && (d > 0 ? V_POS[v] >= V_HI[v] : V_POS[v] <= V_LO[v]) ? loop_seam(v)
+      : V_ENV[v] <= 0 || V_POS[v] >= V_HI[v] || V_POS[v] < V_LO[v] ? (
         V_ENV[v] = 0;
         // R15.7: a held Hold-mode cue that reached its end waits silently
-        V_ST[v] = v < NPADS && slider2 == 0 && V_HELD[v] && V_POS[v] >= V_END[v] - ramp_n * step ? VS_PARK : VS_OFF;
+        V_ST[v] = v < NPADS && slider2 == 0 && V_HELD[v] && rem <= ramp_n + 1 ? VS_PARK : VS_OFF;
       );
     );
     v += 1;
@@ -885,7 +1016,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 5 ? (
+  ser_ver >= 1 && ser_ver <= 6 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -895,6 +1026,11 @@ file_avail(0) >= 0 ? (
       loop(NPADS,
         file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
         file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
+        CU_FILT[i] = CU_REV[i] = CU_KEY[i] = CU_LOOP[i] = CU_XF[i] = 0;
+        ser_ver >= 6 ? (
+          file_var(0, CU_FILT[i]); file_var(0, CU_REV[i]); file_var(0, CU_KEY[i]);
+          file_var(0, CU_LOOP[i]); file_var(0, CU_XF[i]);
+        );
         i += 1;
       );
     );
@@ -927,7 +1063,7 @@ file_avail(0) >= 0 ? (
     ) : has_source ? eject();
   );
 ) : (
-  ser_ver = 5;
+  ser_ver = 6;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -938,6 +1074,8 @@ file_avail(0) >= 0 ? (
   loop(NPADS,
     file_var(0, CU_SET[i]); file_var(0, CU_START[i]); file_var(0, CU_END[i]);
     file_var(0, CU_LEVEL[i]); file_var(0, CU_ATT[i]); file_var(0, CU_REL[i]);
+    file_var(0, CU_FILT[i]); file_var(0, CU_REV[i]); file_var(0, CU_KEY[i]);
+    file_var(0, CU_LOOP[i]); file_var(0, CU_XF[i]);
     i += 1;
   );
   file_var(0, M_CH);
@@ -962,6 +1100,53 @@ function basename(src, dst) local(i, c, cut)
   cut = 0; i = 0;
   loop(strlen(src), c = str_getchar(src, i); c == 47 || c == 92 ? cut = i + 1; i += 1);
   strcpy_substr(dst, src, cut);
+);
+
+function fmt_time(t) ( t < 1 ? sprintf(#pv, "%d ms", floor(t * 1000 + 0.5)) : sprintf(#pv, "%.2f s", t); );
+
+function param_label(k)
+(
+  k == 0 ? "Level" : k == 1 ? "Attack" : k == 2 ? "Release" : k == 3 ? "Filter"
+  : k == 4 ? "Key" : k == 5 ? "Reverse" : k == 6 ? "Loop" : "Crossfade";
+);
+
+function param_text(k, p) local(f, fc)
+(
+  k == 0 ? sprintf(#pv, "%+.1f dB", CU_LEVEL[p])
+  : k == 1 ? fmt_time(CU_ATT[p]) : k == 2 ? fmt_time(CU_REL[p])
+  : k == 3 ? (
+    f = CU_FILT[p]; fc = filter_fc(f);
+    f == 0 ? strcpy(#pv, "off")
+    : sprintf(#pv, fc < 1000 ? "%s %.0f Hz" : "%s %.1f kHz", f < 0 ? "LP" : "HP", fc < 1000 ? fc : fc / 1000);
+  )
+  : k == 4 ? sprintf(#pv, "%+d st", CU_KEY[p])
+  : k == 5 ? strcpy(#pv, CU_REV[p] ? "on" : "off")
+  : k == 6 ? strcpy(#pv, CU_LOOP[p] == 1 ? "forward" : CU_LOOP[p] == 2 ? "backward" : CU_LOOP[p] == 3 ? "alternate" : "off")
+  : fmt_time(CU_XF[p]);
+);
+
+// Dragging up raises a value; px is already scaled down for fine steps.
+// Times move on a square-root scale so short values stay easy to set.
+function drag_param(k, p, px) local(u, len, n)
+(
+  k == 0 ? CU_LEVEL[p] += px * 0.1
+  : k == 1 ? ( u = min(1, max(0, sqrt(CU_ATT[p] / 10) + px * 0.004)); CU_ATT[p] = 10 * u * u; )
+  : k == 2 ? ( u = min(1, max(0, sqrt(CU_REL[p] / 10) + px * 0.004)); CU_REL[p] = 10 * u * u; )
+  : k == 3 ? (
+    CU_FILT[p] += px * 0.005;
+    abs(CU_FILT[p]) < 0.003 ? CU_FILT[p] = 0;           // passing the centre lands on off
+  )
+  : k == 4 ? (
+    // semitone steps (R17.8): collect pixels until a whole step is reached
+    key_acc += px;
+    n = key_acc > 0 ? floor(key_acc / 8) : -floor(-key_acc / 8);
+    CU_KEY[p] += n; key_acc -= n * 8;
+  )
+  : k == 7 ? (
+    len = cue_end(p) - CU_START[p];
+    len > 0 ? ( u = min(1, max(0, CU_XF[p] / len + px * 0.004)); CU_XF[p] = len * u; );
+  );
+  clamp_params(p);
 );
 
 function button(x, y, w, hh, label, on) local(hot)
@@ -1202,7 +1387,11 @@ learn_active ? (
 );
 
 info_y = mw_y + mw_h + 6;
-has_err ? ( rgb(C_ERR); text_at(pad, info_y, #err); );
+has_err ? ( rgb(C_ERR); text_at(pad, info_y, #err); ) : (
+  rgb(C_DIM);
+  text_at(pad, info_y, sprintf(#t, "Strip: %s", strip_mode == 0 ? "filter" : strip_mode == 1 ? "pad level" : "crossfade"));
+  rgb(C_TEXT); text_at(pad + 110, info_y, #slab_msg);
+);
 
 // MIDI monitor
 rgb(C_DIM);
@@ -1237,15 +1426,35 @@ button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 
 // 4x4 pads, pad 1 bottom-left like the hardware; lit while sounding (R15.2),
 // outlined when selected (R15.3). Shift-click deletes (R11.2).
-row_y = bar_y + bh + 10;
-rgb(C_DIM);
-selected >= 0 && CU_SET[selected] ? (
-  text_at(pad, row_y, sprintf(#t, "Pad %d   level %+.1f dB   attack %.3f s   release %.3f s",
-    selected + 1, CU_LEVEL[selected], CU_ATT[selected], CU_REL[selected]));
-) : text_at(pad, row_y, "No cue selected");
-text_at(pad + 420, row_y, sprintf(#t, "Strip: %s", strip_mode == 0 ? "filter" : strip_mode == 1 ? "pad level" : "crossfade"));
-rgb(C_TEXT); text_at(pad + 540, row_y, #slab_msg);
-pads_y = row_y + 24;
+// Parameter row for the selected cue (R17), in its colour (R17.13): drag up
+// or down to change, Cmd/Ctrl for fine steps (R17.10), Alt-click resets
+// (R17.9); Reverse toggles and Loop steps through its modes on a click.
+row_y = bar_y + bh + 10; row_h = 40; row_gap = 6;
+pw = floor((gfx_w - 2 * pad - 7 * row_gap) / 8);
+has_sel = selected >= 0 && CU_SET[selected] && state == S_READY;
+k = 0;
+loop(8,
+  px0 = pad + k * (pw + row_gap);
+  rgb(C_PANEL); gfx_rect(px0, row_y, pw, row_h);
+  has_sel ? ( rgb(PALETTE[selected]); gfx_rect(px0, row_y, pw, 2); );
+  rgb(C_DIM); text_at(px0 + 8, row_y + 6, param_label(k));
+  has_sel ? ( rgb(C_TEXT); text_at(px0 + 8, row_y + 22, param_text(k, selected)); )
+          : text_at(px0 + 8, row_y + 22, "-");
+  clicked && has_sel && !learn_active && inside(px0, row_y, pw, row_h) ? (
+    mouse_cap & 16 ? reset_param(k, selected)
+    : k == 5 ? CU_REV[selected] = !CU_REV[selected]
+    : k == 6 ? CU_LOOP[selected] = (CU_LOOP[selected] + 1) % 4
+    : ( drag_mode = 5; drag_param_k = k; drag_y = mouse_y; key_acc = 0; );
+  );
+  k += 1;
+);
+drag_mode == 5 && (mouse_cap & 1) && has_sel ? (
+  mouse_y != drag_y ? (
+    drag_param(drag_param_k, selected, (drag_y - mouse_y) * (mouse_cap & 4 ? 0.1 : 1));
+    drag_y = mouse_y;
+  );
+);
+pads_y = row_y + row_h + 12;
 gap = 8;
 ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
 ps = max(ps, 20);

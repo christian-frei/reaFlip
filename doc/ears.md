@@ -4,7 +4,7 @@ title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
 date: 2026-10-23
-revision: 6
+revision: 7
 status: ready
 ---
 
@@ -289,9 +289,9 @@ in the long run, offered to Cockos for inclusion in REAPER.
 
 ### R21: Control from SLAB
 - R21.1 — When the producer presses the dial, the system shall toggle play and pause of the source.
-- R21.2 — When the producer turns encoder 1, the system shall change the selected cues' attack.
-- R21.3 — When the producer turns encoder 2, the system shall change the selected cues' release.
-- R21.4 — When the producer turns encoder 3, the system shall change the selected cues' level.
+- R21.2 — When the producer turns encoder 1, the system shall change the selected cues' level.
+- R21.3 — When the producer turns encoder 2, the system shall change the selected cues' filter.
+- R21.4 — When the producer turns encoder 3, the system shall change the selected cues' attack.
 - R21.5 — When the producer turns encoder 4, the system shall change the selected cues' key shift.
 - R21.6 — When the producer presses an encoder, the system shall reset its parameter to the default for the selected cues.
 - R21.7 — When the producer presses Undo, the system shall undo as in R19.1.
@@ -375,3 +375,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r4 — name decided: ReaFlip (title, Context, Terms: Instance); Q13 resolved.
 - r5 — default pad notes 0–15, as SLAB sends them (R20.1 changed); Q1 narrowed to the non-pad controls.
 - r6 — load target with several instances (R1.16 added); Shift combinations learned on their own (R20.15 added).
+- r7 — encoders remapped to level, filter, attack, key shift (R21.2–R21.4 changed); release is set in the window only.

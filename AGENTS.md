@@ -174,6 +174,17 @@ project rate (resample on playback, linear interpolation is fine for v1).
   Same input → same output, no randomness.
 - **Undo** (R19): ring buffer of ≥ 100 cue-state snapshots in plugin memory;
   not persisted.
+- **Modifiers** (Terms: Modifier): Shift-click on a pad deletes (R11.2);
+  in the parameter row Alt-click resets (R17.9) and Cmd/Ctrl-drag is fine
+  (R17.10). Copy and multi-select modifiers come with 5b.
+- **Loops** (R17.19–17.27): at every seam the outgoing pass carries on past
+  the boundary in a tail voice and fades out while the next pass fades in,
+  over the cue's crossfade (at least the 2 ms ramp, so a crossfade of 0
+  never clicks). Backward plays one pass in the playing direction, then
+  repeats against it; alternate turns at every seam.
+- **Filter** (R17.4–17.6): RBJ biquad per voice, Q 0.707, cutoff on a log
+  scale 17 kHz → 80 Hz; recomputed in `@block` when the cue's value changes
+  while it sounds (the touch strip moves it live).
 - **Lazy chop** (R9): state machine — idle / pass running; pass ends on stop
   or when all 16 pads hold cues.
 
@@ -255,8 +266,21 @@ groups it covers, e.g. `Slice 1: load section, waveform, persistence (R1–R5, R
 | 1 Load | Lua helper with all checks, track creation, live-ready; JSFX loading with progress, overview waveform, persistence and reload, missing file | R1, R3, R4.3, R5, R7.1, R22 |
 | 2 Play | 16 pads by mouse and MIDI notes, Hold/Trigger, Mono/Poly, click-free ramps, velocity; **temporary** 16 even cues on a fresh load (`temp_even_cues`, breaks R1.3 — remove in slice 3) | R15, R16, R17.11–17.12, R17.18 |
 | 3 Chop | source player (play/pause, seek, scrub), lazy chop, main waveform with zoom/freeze, cue handles, delete, cues kept and clamped on swap; removes the temporary even cues | R2, R6.1–6.4, R6.7, R7, R9, R10.1–10.2, R10.7–10.9, R10.14–10.16, R11.1–11.2, R11.5–11.7 |
-| 4 SLAB | Learn, dial start / Shift+dial end, arrows, Delete+pad, app buttons, encoders, touch strip | R10.3–10.6, R11.3, R20, R21 |
-| 5 Rest | beatgrid + analysis, BPM display, Quantize, Slicer (needs the grid), cue parameters, loops, Find samples, selection, favourites, undo, move/copy/rename | R4, R6.5–6.6, R8, R10.10–10.12, R10.17, R11.4, R12, R13, R14, R17, R18, R19 |
+| 4 SLAB | Learn, dial start / Shift+dial end, Delete+pad, app buttons, encoders 1–3, touch strip pad level; the rest shows "comes with slice 5" | R10.3–10.4, R11.3, R20, R21 |
+| 5a Shape | per-cue filter, reverse, key shift, loop modes + crossfade; editable parameter row (mouse, reset and fine modifiers); SLAB encoder 4, strip filter/crossfade, Note Repeat = loop mode | R15.16–15.18, R17, R21.5, R21.17, R21.25–21.26 |
+| 5b Organise | multi-select, Select All, favourites, delete all, undo/redo, move/swap/copy/rename; parameters on several cues | R11.4, R12, R17.14–17.16, R18, R19, R21.7–21.8, R21.11, R21.13 |
+| 5c Beatgrid | tempo + downbeat analysis on load (cancellable), BPM display, double/half, grid edit, Quantize; SLAB arrows (one beat), Shift+Select All | R4, R6.5–6.6, R8, R10.5–10.6, R10.10–10.12, R10.17, R21.27 |
+| 5d Autoset | Slicer, Find samples; SLAB Auto Set, Shift+Auto Set | R13, R14, R21.9–21.10 |
+
+5b comes before 5d because Auto Set overwrites cues and undo is its safety
+net; 5c before 5d because Slicer needs the grid. Tempo detection (5c) is the
+riskiest piece and gets its own slice.
+
+**Later, not scheduled:** pad and button LEDs on the SLAB. In General mode
+the SLAB did not light pad 1 when note 0 ch 8 was sent back to it at
+various velocities (tested 2026-10-23). Revisit if AlphaTheta's MIDI
+message list turns up. Serato mode's protocol is unpublished and not an
+option.
 
 The remote is on GitHub (repo URL supplied by the user); push after each
 tested slice. The repo stays private until the distribution section below
