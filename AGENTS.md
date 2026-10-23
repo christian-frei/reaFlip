@@ -328,14 +328,15 @@ various velocities (tested 2026-10-23). Revisit if AlphaTheta's MIDI
 message list turns up. Serato mode's protocol is unpublished and not an
 option.
 
-The remote is on GitHub (repo URL supplied by the user); push after each
-tested slice. The repo stays private until the distribution section below
-is done.
+The remote is on GitHub (github.com/christian-frei/reaFlip, public since
+v0.1.0, 2026-10-23); push after each tested slice. Commit with the gmail
+address set in this repo's git config, never the global work address.
 
-## Installation & distribution — LATER (not before v0.1 works)
+## Installation & distribution
 
-> **Flagged for later.** Do none of this until the instrument works in
-> REAPER. Kept here so it isn't lost.
+v0.1.0 released 2026-10-23 under MIT: tag, GitHub release with
+`ReaFlip-<version>.zip` (folder `ReaFlip/` with the two files, README,
+LICENSE, built with `git archive <tag>`).
 
 Requirements for users: stock REAPER 7.x. **No SWS, no ReaPack, no other
 extensions** — JSFX and Lua ReaScript are built into REAPER, and every API
