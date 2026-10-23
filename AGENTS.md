@@ -176,9 +176,20 @@ project rate (resample on playback, linear interpolation is fine for v1).
 - **Quantize** is slider 6 (automatable like the other modes). `snap()` sits
   inside `new_cue`, `set_start` and `set_end`, so mouse, dial, arrows and
   lazy chop all snap; with Quantize on a dial tick is 1/8 beat.
-- **Find samples** (R14): onset strength from the same onset envelope; take
-  the N strongest (N = 4–16, default 16), sort by time, skip favourite pads.
-  Same input → same output, no randomness.
+- **Find samples** (R14): its own envelope (`tr_step`, after every load and
+  reopen): linear rises in level plus first difference per 256-sample frame,
+  so "strongest" means loudest. Peaks at least 50 ms apart and above 2 % of
+  the strongest are candidates; take the N strongest (N = 4–16, default
+  16), sort by time; the attack is where the waveform first reaches 30 %
+  of the hit's peak, the cue goes 3 ms before it (longer than the start
+  ramp) and back to the nearest zero crossing within 5 ms. Same input →
+  same output, no randomness.
+- **Auto set** (R13, R14): both modes fill the non-favourite pads from the
+  lowest and empty the rest. Slicer starts at the playhead (snapped while
+  Quantize is on); slice length is `sl_k`, a power of two of a beat. Shift
+  and a new slice length lay the slices out again from `sl_t0` while
+  `sl_on`; undo/redo, a load or Find samples end that. Mode, slice length
+  and count are saved (format v9).
 - **Undo** (R19): all cue state (numeric fields, favourite, colour, name)
   is one contiguous block (`CUE_SIZE`), so a snapshot is one `memcpy` into a
   ring of 128 (`HIST`). `@block` compares the cues with the current

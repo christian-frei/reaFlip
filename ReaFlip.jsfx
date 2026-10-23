@@ -50,6 +50,9 @@ SEL = 1721000;                    // selection flags; not part of undo
 SEEN = 1797000; HIST = 1800000; HSLOTS = 128;   // 127 steps back (R19.3)
 // tempo analysis (R4): onset strength per HOP frames, its autocorrelation per lag
 HOP = 256; ONS = 1880000; ONS_MAX = 7000; AC = 1888000; AC_MAX = 2600;
+// Find samples (R14): transient strength per HOP frame, kept per source;
+// FS marks candidates (1) and picks (2); AS_T/AS_E are the cues Auto set places
+TR = 1891000; FS = 1898000; AS_T = 1905000; AS_E = 1905020;
 metro_n = 1000000;                // no metronome click pending
 // voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
 // 32 plays the source itself (play/pause and lazy chop)
@@ -156,6 +159,7 @@ function eject()
   has_err = 0;
   strcpy(#path, "");
   has_grid = 0; ana_state = 0; ge_on = 0;
+  tr_ok = 0; sl_on = 0; fs_req = 0;
   reset_cues();                  // R3.2
 );
 
@@ -290,6 +294,28 @@ function norm_gs() local(bar) ( bar = 4 * beat_len(); gs -= floor(gs / bar) * ba
 
 function set_bpm(v) ( bpm = max(20, min(220, v)); );   // R8.13
 
+// Transient strength for Find samples (R14), a slice per block after every
+// load, reopen included. Linear rises in level, not log ones like the tempo
+// envelope: "strongest" means loudest, and a whisper after silence must
+// not outrank a kick. The first difference adds the highs (hats, snares).
+function tr_step() local(e, h, i, x, r, rh)
+(
+  tr_n == 0 ? ( tr_frames = min(floor(frames / HOP), ONS_MAX); tr_r = 0; tr_h = 0; tr_xp = 0; );
+  loop(min(256, tr_frames - tr_n),
+    e = 0; h = 0; i = tr_n * HOP;
+    loop(HOP,
+      x = nch > 1 ? (BUF[i * 2] + BUF[i * 2 + 1]) * 0.5 : BUF[i];
+      e += x * x; h += sqr(x - tr_xp); tr_xp = x;
+      i += 1;
+    );
+    r = sqrt(e / HOP); rh = sqrt(h / HOP);
+    TR[tr_n] = max(0, r - tr_r) + max(0, rh - tr_h);
+    tr_r = r; tr_h = rh;
+    tr_n += 1;
+  );
+  tr_n >= tr_frames ? tr_ok = 1;
+);
+
 // Validate the requested file fully before touching the buffer, so a failed
 // load leaves the current source playable. On project reopen a file that
 // cannot be opened is "missing": keep path, section and cues (R5.3, R5.4).
@@ -346,6 +372,7 @@ function request_load(reopen)
       // a new or swapped source is analysed afresh (R4.6); a reopen keeps
       // the grid @serialize restored
       !reopen ? ( has_grid = 0; grid_keep = 0; ana_state = 0; );
+      tr_ok = 0; tr_n = 0; sl_on = 0; fs_req = 0;
       ph = 0;
       view_reset = 1;
       skip_total = rskip; skipped = 0;
@@ -943,6 +970,7 @@ function hist_track(dt)
 function after_restore() local(i)
 (
   memcpy(SEEN, CU_SET, CUE_SIZE);
+  sl_on = 0;                     // the slices are no longer the ones it made
   i = 0;
   loop(NPADS,
     !CU_SET[i] ? ( cut(i); SEL[i] = 0; ph_voice == i ? ph_voice = -1; );
@@ -1031,6 +1059,124 @@ function nudge_time(t, d) local(sz)
   max(0, min(10, t + d * sz));   // R17.2, R17.3 range, held at the limits (R17.17)
 );
 
+// ---- Auto set (R13, R14) ----
+// Both modes write the cues in AS_T/AS_E onto the pads that are not
+// favourites, from the lowest pad, and empty the rest (R13.7, R14.4,
+// R14.6, R14.8). Undo sees it as one change (R19).
+function autoset_place(n) local(p, k)
+(
+  k = 0; p = 0;
+  loop(NPADS,
+    !CU_FAV[p] ? (
+      k < n ? (
+        cut(p); ph_voice == p ? ph_voice = -1;
+        new_cue(p, 0);
+        CU_START[p] = AS_T[k]; CU_END[p] = AS_E[k];
+        k += 1;
+      ) : delete_cue(p);
+    );
+    p += 1;
+  );
+  selected >= 0 && !CU_SET[selected] ? selected = first_sel();
+);
+
+function free_pads() local(p, n) ( n = 0; p = 0; loop(NPADS, !CU_FAV[p] ? n += 1; p += 1); n; );
+
+// sl_k: slice length as a power of two of a beat, -4..4 = 1/16..16 beats;
+// 0 = 1 beat, the default (R13.2, R13.8)
+function slice_name()
+(
+  sl_k < 0 ? sprintf(#sln, "1/%d beat", 2 ^ -sl_k) : sprintf(#sln, "%d beat%s", 2 ^ sl_k, sl_k ? "s" : "");
+);
+
+// R13.1: consecutive slices of equal length from t0; a slice that would
+// pass the source's end stays empty, with every later one (R13.5)
+function run_slicer(t0) local(L, n)
+(
+  !has_grid ? say("Slicer needs a tempo: set a beatgrid first.")             // R13.6
+  : (
+    L = beat_len() * 2 ^ sl_k;
+    n = 0;
+    while (n < free_pads() && t0 + (n + 1) * L <= sec_len + 0.0005 ? (
+      AS_T[n] = t0 + n * L; AS_E[n] = min(sec_len, t0 + (n + 1) * L);
+      n += 1;
+    ) : 0);
+    n ? (
+      autoset_place(n);
+      sl_on = 1; sl_t0 = t0;
+      say(sprintf(#t, "Slicer: %d slices of %s", n, slice_name()));
+    ) : say("No whole slice fits after the playhead.");
+  );
+);
+
+function abs_at(j) ( nch > 1 ? max(abs(BUF[j * 2]), abs(BUF[j * 2 + 1])) : abs(BUF[j]); );
+
+function mid_at(j) ( nch > 1 ? BUF[j * 2] + BUF[j * 2 + 1] : BUF[j]; );
+
+// The envelope says which frame a hit rises in; the attack starts where the
+// waveform first reaches 30 % of the hit's peak. The cue goes 3 ms before
+// that, longer than the 2 ms start ramp, so the whole attack plays at full
+// level (R14.2, R15.12), and then back to the nearest zero crossing within
+// 5 ms, or the quietest sample there, so the start never pops.
+function hit_time(i) local(a, b, j, pk, lo, q, qv)
+(
+  a = max(0, (i - 1) * HOP); b = min(frames, (i + 2) * HOP);
+  pk = 0; j = i * HOP; loop(max(0, b - j), pk = max(pk, abs_at(j)); j += 1);
+  j = a;
+  while (j < b && abs_at(j) < 0.3 * pk ? ( j += 1; 1; ) : 0);
+  j = max(0, j - floor(0.003 * fsr));
+  lo = max(0, j - floor(0.005 * fsr));
+  q = j; qv = abs(mid_at(j));
+  while (j > lo && qv > 0 && mid_at(j) * mid_at(j - 1) > 0 ? (
+    j -= 1;
+    abs(mid_at(j)) < qv ? ( q = j; qv = abs(mid_at(j)); );
+    1;
+  ) : 0);
+  j > lo && qv > 0 ? q = (abs(mid_at(j)) <= abs(mid_at(j - 1)) ? j : j - 1);   // the crossing's quieter side
+  q / fsr;
+);
+
+// R14.2-R14.5, R14.7: the N strongest hits at least 50 ms apart, in time
+// order. Only comparisons, ties go to the earlier hit: the same source
+// and count always give the same cues.
+function find_samples() local(W, i, j, mx, ok, n, want, best, bi)
+(
+  sl_on = 0;
+  W = max(1, floor(0.05 * fsr / HOP));
+  mx = 0; i = 0; loop(tr_frames, mx = max(mx, TR[i]); i += 1);
+  memset(FS, 0, tr_frames);
+  i = 0;
+  loop(tr_frames,
+    ok = TR[i] > 0.02 * mx;                               // below that: not a detectable hit
+    j = max(0, i - W);
+    while (ok && j <= min(tr_frames - 1, i + W) ? (
+      (j < i && TR[j] >= TR[i]) || (j > i && TR[j] > TR[i]) ? ok = 0;
+      j += 1;
+      1;
+    ) : 0);
+    FS[i] = ok;
+    i += 1;
+  );
+  want = min(16 - fs_drop, free_pads()); n = 0;
+  while (n < want ? (
+    best = 0; bi = -1; i = 0;
+    loop(tr_frames, FS[i] == 1 && TR[i] > best ? ( best = TR[i]; bi = i; ); i += 1);
+    bi >= 0 ? ( FS[bi] = 2; n += 1; );
+    bi >= 0;
+  ) : 0);
+  n = 0; i = 0;
+  loop(tr_frames, FS[i] == 2 ? ( AS_T[n] = hit_time(i); AS_E[n] = -1; n += 1; ); i += 1);
+  autoset_place(n);
+  say(n ? sprintf(#t, "Find samples: %d hits", n) : "Find samples found no hits.");
+);
+
+// R21.9: Auto set runs the current mode; Slicer starts at the playhead
+function autoset_run()
+(
+  auto_mode == 0 ? run_slicer(snap(ph / fsr))
+  : tr_ok ? find_samples() : ( fs_req = 1; say("Finding samples ..."); );
+);
+
 function has_target() ( state == S_READY && selected >= 0 && CU_SET[selected]; );   // the dial's cue
 
 function slab_control(k, val) local(d, i, pr, f, q, ds)
@@ -1090,7 +1236,11 @@ function slab_control(k, val) local(d, i, pr, f, q, ds)
         state == S_READY ? ( src_playing ? src_stop() : src_start(ph); );
       ) : k == L_TRIG ? (
         slider2 = !slider2; slider_automate(slider2);                        // R21.14
-      ) : (k == L_FAV && slab_shift) || k == L_SFAV ? (
+      ) : (k == L_AUTOSET && slab_shift) || k == L_SAUTOSET ? (
+        auto_mode = !auto_mode;                                              // R21.10
+        say(auto_mode ? "Auto set: Find samples" : "Auto set: Slicer");
+      ) : k == L_AUTOSET ? ( state == S_READY ? autoset_run(); )             // R21.9
+      : (k == L_FAV && slab_shift) || k == L_SFAV ? (
         slider3 = !slider3; slider_automate(slider3);                        // R21.12
       ) : k == L_STRIPMODE ? (
         strip_mode = (strip_mode + 1) % 3;                                   // R21.16
@@ -1175,6 +1325,7 @@ reload_pending ? (
 );
 state == S_LOADING || state == S_PEAKS ? load_step();
 state == S_READY && ana_state ? ana_step();
+state == S_READY && !tr_ok ? ( tr_step(); tr_ok && fs_req ? ( fs_req = 0; find_samples(); ); );
 ana_cancel_req ? ana_cancel();
 ana_cancel_req = 0;
 
@@ -1192,10 +1343,15 @@ state == S_READY ? (
   redo_req ? redo();
   delsel_req ? delete_selected();
   padop_req ? pad_op(padop_from, padop_to, padop_copy);
+  // Auto set from the window: run, shift the slices by a step (R13.4), or
+  // lay them out again after a new slice length (R13.3)
+  auto_req == 1 ? autoset_run()
+  : auto_req == 2 || auto_req == 3 ? ( sl_on ? run_slicer(max(0, sl_t0 + (auto_req == 3 ? 1 : -1) * edit_step())); )
+  : auto_req == 4 ? ( sl_on ? run_slicer(sl_t0); );
   hist_track(samplesblock / srate);
 );
 play_req = 0; seek_req = 0; del_req = 0;
-undo_req = 0; redo_req = 0; delsel_req = 0; padop_req = 0;
+undo_req = 0; redo_req = 0; delsel_req = 0; padop_req = 0; auto_req = 0;
 
 // a filter moved while its cue sounds follows at once (R21.17)
 i = 0;
@@ -1337,7 +1493,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 8 ? (
+  ser_ver >= 1 && ser_ver <= 9 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -1382,6 +1538,8 @@ file_avail(0) >= 0 ? (
       file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
       grid_keep = 1; ana_state = 0;
     ) : grid_keep = 0;
+    ser_ver >= 9 ? ( file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop); )
+                 : ( auto_mode = 0; sl_k = 0; fs_drop = 0; );            // R13.8, R14.9
     ser_has ? (
       // undo restores run this too: only reload when the source really changed
       !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
@@ -1395,7 +1553,7 @@ file_avail(0) >= 0 ? (
     hist_reset();
   );
 ) : (
-  ser_ver = 8;
+  ser_ver = 9;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -1411,6 +1569,7 @@ file_avail(0) >= 0 ? (
     i += 1;
   );
   file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
+  file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop);
 );
 
 @gfx 900 760
@@ -2042,6 +2201,26 @@ rename_on ? (
   text_at(sx, sy + 188, "Shift-click: delete");
   text_at(sx, sy + 204, "Drag: move or swap, Alt-drag: copy");
 );
+// Auto set (R13, R14): mode, slice length or hit count, run, shift slices
+ax = sx + sw + 24; aw = 150;
+button(ax, sy, aw / 2 - 3, sh, "Slicer", auto_mode == 0) && ready ? auto_mode = 0;
+button(ax + aw / 2 + 3, sy, aw / 2 - 3, sh, "Find", auto_mode == 1) && ready ? auto_mode = 1;
+button(ax, sy + 34, 26, sh, "-", 0) && ready ? (
+  auto_mode == 0 ? ( sl_k > -4 ? ( sl_k -= 1; auto_req = 4; ); ) : fs_drop = min(12, fs_drop + 1);   // R13.2, R14.1
+);
+button(ax + aw - 26, sy + 34, 26, sh, "+", 0) && ready ? (
+  auto_mode == 0 ? ( sl_k < 4 ? ( sl_k += 1; auto_req = 4; ); ) : fs_drop = max(0, fs_drop - 1);
+);
+rgb(C_TEXT);
+auto_mode == 0 ? slice_name() : sprintf(#sln, "%d hits", 16 - fs_drop);
+gfx_measurestr(#sln, tw, th); text_at(ax + (aw - tw) / 2, sy + 34 + (sh - th) / 2, #sln);
+button(ax, sy + 68, aw, sh, auto_mode == 0 ? "Slice from playhead" : "Find samples", 0) && ready ? auto_req = 1;
+auto_mode == 0 ? (
+  button(ax, sy + 102, aw / 2 - 3, sh, "< Shift", 0) && ready && sl_on ? auto_req = 2;
+  button(ax + aw / 2 + 3, sy + 102, aw / 2 - 3, sh, "Shift >", 0) && ready && sl_on ? auto_req = 3;
+  rgb(C_DIM); text_at(ax, sy + 134, sl_on ? "Shift moves all slices" : "Shift: after slicing");
+);
+
 mouse_down = mouse_cap & 1;      // undo waits for the end of a drag
 
 last_cap = mouse_cap;
