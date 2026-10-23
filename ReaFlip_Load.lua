@@ -1,5 +1,6 @@
 -- ReaFlip: load the selected item's audio section into the ReaFlip JSFX. The plugin does all slicing; this script only finds
 -- the file and section, and makes the instrument track ready to play live.
+-- Copyright (c) 2026 Christian Frei. MIT licence, see LICENSE.
 
 local NAME = "ReaFlip" -- also the JSFX desc and the track name
 local GMEM = "ReaFlip"

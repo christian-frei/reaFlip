@@ -1,6 +1,7 @@
 desc:ReaFlip
 // The name lives here, in NAME in ReaFlip_Load.lua and in the README.
 // Behaviour: doc/ears.md, build notes: AGENTS.md.
+// Copyright (c) 2026 Christian Frei. MIT licence, see LICENSE.
 options:gmem=ReaFlip
 options:maxmem=4194304
 

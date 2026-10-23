@@ -54,9 +54,9 @@ title).
 ├── .gitignore                   # keeps test audio, REAPER projects/peaks, personal scripts out
 ├── README.md                    # user-facing install + usage
 ├── doc/ears.md                  # EARS requirements (source of truth for behaviour)
-├── ReaFlip.jsfx             # the instrument: DSP, MIDI, UI, state
-├── ReaFlip_Load.lua         # action: send the selected item's section to the JSFX
-└── probe/                       # temporary: file-loading test, delete once "Verify first" is answered
+├── LICENSE                      # MIT
+├── ReaFlip.jsfx                 # the instrument: DSP, MIDI, UI, state
+└── ReaFlip_Load.lua             # action: send the selected item's section to the JSFX
 ```
 
 Keep it flat. Install = copy or symlink `ReaFlip.jsfx` into REAPER's
@@ -103,7 +103,7 @@ this. Split the JSFX with `import` only if one file becomes hard to read.
   path on project open (R5). Missing file → message in the UI, keep state,
   silent pads (R5.3–R5.5, R15.14).
 
-**Verified (probe, 2026-10-21):** `file_open` with an absolute path
+**Verified (with a throwaway probe, removed 2026-10-23):** `file_open` with an absolute path
 (spaces, `~`, iCloud Drive folder), gmem path handover, `file_riff` +
 `file_mem` on a 44.1 kHz mono WAV — sample values match REAPER's own;
 section offset (take start offset 5.5 s) by reading past the start —
@@ -120,7 +120,7 @@ Long skip (2026-10-22): 154.9 s mono WAV, section from 142.5 s — skipped
 6 284 250 values, loaded 544 887, 1.11 s, first frames match, **no audible
 dropout** with another track playing. 64 K values per block is safe.
 
-**Still to verify (with the real loader, not the probe):** non-ASCII
+**Still to verify (with the real loader):** non-ASCII
 paths; 48 kHz file (playback pitch); reversed and section sources (offset
 maths in the Lua helper); MP3/FLAC refusal.
 
