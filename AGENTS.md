@@ -259,6 +259,26 @@ ch 1 and ch 7 with shared note numbers (DELETE and PLAY are both note 94).
 With SHIFT held the SLAB sends other messages (hence R20.15): dial CC 61,
 AUTO SET / FAVORITE / SELECT ALL their note + 1 (81, 83, 97 ch 7).
 
+**Official list (found 2026-10-23):** AlphaTheta "SLAB List of MIDI
+Messages",
+https://downloads.support.alphatheta.com/midi-mapping/music-production/SLAB/SLAB_MIDI_Message_List_en.pdf
+(linked from support.alphatheta.com article 52774134882841). It confirms
+the Learn results and adds:
+- Pads are on ch 8, and with SHIFT on ch 9. The bottom row is notes 0–3,
+  the top row 12–15, so our pad 1 is the bottom-left pad, which AlphaTheta
+  calls pad 13.
+- Pad pages add 16 per page.
+- With SHIFT the encoders send CC 20–23.
+- The touch strip has two modes, switched with STRIP MODE (note 64, ch 7):
+  - mode 1: CC 14 (coarse) and CC 46 (fine);
+  - mode 2: CC 16 and CC 48.
+- **LED feedback:**
+  - Pads: send the same note back on the same channel. The velocity is a
+    colour number, 1–127; the list has no colour table.
+  - Encoder rings: send the press note (32–35, ch 1). The velocity is a
+    colour.
+  - Buttons: send their own note on their own channel, 0 = off, 127 = on.
+
 **Where the map lives (R20.9, R20.14):** each instance keeps its own map in
 `@serialize`. Confirming Learn also writes the map to gmem (`G_MAP` = 8192:
 version written last, layout id, pad channel, 16 pads,
@@ -324,9 +344,11 @@ riskiest piece and gets its own slice.
 
 **Later, not scheduled:** pad and button LEDs on the SLAB. In General mode
 the SLAB did not light pad 1 when note 0 ch 8 was sent back to it at
-various velocities (tested 2026-10-23). Revisit if AlphaTheta's MIDI
-message list turns up. Serato mode's protocol is unpublished and not an
-option.
+various velocities (tested 2026-10-23). The official list (above) says
+exactly that message should light it. The likely cause was routing: REAPER
+needs the SLAB enabled under *Preferences → MIDI Outputs* and the track's
+MIDI hardware output set to it. Retest before building. Serato mode's
+protocol is unpublished and not an option.
 
 The remote is on GitHub (github.com/christian-frei/reaFlip, public since
 v0.1.0, 2026-10-23); push after each tested slice. Commit with the gmail
