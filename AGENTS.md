@@ -55,6 +55,7 @@ title).
 ├── README.md                    # user-facing install + usage
 ├── doc/ears.md                  # EARS requirements (source of truth for behaviour)
 ├── LICENSE                      # MIT
+├── index.xml                    # ReaPack repository index
 ├── ReaFlip.jsfx                 # the instrument: DSP, MIDI, UI, state
 └── ReaFlip_Load.lua             # action: send the selected item's section to the JSFX
 ```
@@ -387,9 +388,19 @@ Publishing (GitHub or GitLab, host to be decided):
 - Nothing machine-specific in the repo (no absolute paths, no personal
   project files, no test audio that isn't freely licensed).
 
-Optional, also later: a ReaPack `index.xml` in the same repo so ReaPack users
-can subscribe and get updates. This is a distribution channel only — the
-project must never depend on ReaPack.
+**ReaPack** (added 2026-10-27): `index.xml` at the repo root, hand-written,
+no `reapack-index` tool. Users import
+`https://github.com/christian-frei/reaFlip/raw/main/index.xml`. One package
+(`type="effect"`, category `Instruments`) whose version carries two sources:
+the JSFX, and the Lua helper with `type="script" main="main"` so ReaPack
+registers it as an action. ReaPack installs into
+`Effects/ReaFlip/Instruments/` and `Scripts/ReaFlip/Instruments/`. That is
+fine: the helper adds the plugin by its `desc` and finds instances by
+`fx_ident` substring. Source URLs point at the tag
+(`raw.githubusercontent.com/…/v<version>/…`), never at `main`, so a version
+never changes after release. On each release add a `<version>` entry (name,
+time in UTC, changelog) next to the tag and the zip. This is a distribution
+channel only — the project must never depend on ReaPack.
 
 ## Open questions
 

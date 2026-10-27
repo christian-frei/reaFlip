@@ -30,9 +30,22 @@ General MIDI mode. Not affiliated with or endorsed by Serato or AlphaTheta.
 
 ## Prerequisites
 
-REAPER 7.x (stock). No SWS, ReaPack, js_ReaScriptAPI or ReaImGui.
+REAPER 7.x (stock). No SWS, js_ReaScriptAPI or ReaImGui. ReaPack is
+optional, for installing and updating.
 
 ## Install
+
+### With ReaPack
+
+1. In REAPER, open *Extensions → ReaPack → Import repositories…* and paste:
+   ```
+   https://github.com/christian-frei/reaFlip/raw/main/index.xml
+   ```
+2. Open *Extensions → ReaPack → Browse packages*, find **ReaFlip**, and
+   install it. This installs the JSFX and registers the load action
+   **ReaFlip_Load**. Bind the action to a key or toolbar button.
+
+### By hand
 
 1. Download the zip from the [latest release](https://github.com/christian-frei/reaFlip/releases/latest).
 2. In REAPER, open *Options → Show REAPER resource path*.

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<index version="1" name="ReaFlip">
+  <category name="Instruments">
+    <reapack name="ReaFlip.jsfx" type="effect" desc="ReaFlip: sample-chopping instrument with 16 cue pads">
+      <metadata>
+        <link rel="website">https://github.com/christian-frei/reaFlip</link>
+        <link rel="screenshot" href="https://raw.githubusercontent.com/christian-frei/reaFlip/main/doc/screenshot.png">ReaFlip window</link>
+      </metadata>
+      <version name="0.1.0" author="Christian Frei" time="2026-10-23T12:52:50Z">
+        <changelog>First release.</changelog>
+        <source>https://raw.githubusercontent.com/christian-frei/reaFlip/v0.1.0/ReaFlip.jsfx</source>
+        <source file="ReaFlip_Load.lua" type="script" main="main">https://raw.githubusercontent.com/christian-frei/reaFlip/v0.1.0/ReaFlip_Load.lua</source>
+      </version>
+    </reapack>
+  </category>
+  <metadata>
+    <link rel="website">https://github.com/christian-frei/reaFlip</link>
+  </metadata>
+</index>
