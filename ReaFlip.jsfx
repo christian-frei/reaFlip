@@ -911,11 +911,45 @@ function add_event(offset, p, vel)
 
 // ---- MIDI map, learn and SLAB controls ----
 
-function map_defaults() local(i)
+// Controller list (R20.16): 0 AlphaTheta SLAB, 1 pads only, 2 learned
+CT_SLAB = 0; CT_PADS = 1; CT_LEARNED = 2;
+
+function map_pads() local(i)
 (
   M_CH = 0;
-  i = 0; loop(NPADS, M_PAD[i] = i; i += 1);              // R20.1
+  i = 0; loop(NPADS, M_PAD[i] = i; i += 1);
   memset(M_KIND, K_NONE, NSTEPS);
+);
+
+function mset(k, kind, num, enc, ch)
+(
+  M_KIND[k] = kind; M_NUM[k] = num; M_ENC[k] = enc; M_CHN[k] = ch;
+);
+
+// SLAB in General mode: a Learn run on the unit (2026-10-23), checked against
+// AlphaTheta's "SLAB List of MIDI Messages". Pads notes 0-15 on ch 8, the
+// dial and encoders are sign-bit relative. The strip is CC 16, the SLAB's
+// own strip mode 2; mode 1 sends CC 14 and is not matched.
+function map_slab() local(i)
+(
+  map_pads();
+  M_CH = 8;
+  mset(L_DIAL, K_CC, 60, E_SIGNBIT, 1);     mset(L_SHIFT, K_NOTE, 70, 0, 1);
+  mset(L_SDIAL, K_CC, 61, E_SIGNBIT, 1);    mset(L_DELETE, K_NOTE, 94, 0, 7);
+  mset(L_LEFT, K_NOTE, 100, 0, 1);          mset(L_RIGHT, K_NOTE, 101, 0, 1);
+  mset(L_DIALPRESS, K_NOTE, 98, 0, 1);      mset(L_PLAY, K_NOTE, 94, 0, 1);
+  mset(L_TRIG, K_NOTE, 112, 0, 7);          mset(L_STRIPMODE, K_NOTE, 64, 0, 7);
+  i = 0; loop(4,
+    mset(L_ENC1 + i, K_CC, 16 + i, E_SIGNBIT, 1);
+    mset(L_ENC1P + i, K_NOTE, 32 + i, 0, 1);
+    i += 1;
+  );
+  mset(L_UNDO, K_NOTE, 81, 0, 1);           mset(L_REDO, K_NOTE, 82, 0, 1);
+  mset(L_AUTOSET, K_NOTE, 80, 0, 7);        mset(L_SAUTOSET, K_NOTE, 81, 0, 7);
+  mset(L_FAV, K_NOTE, 82, 0, 7);            mset(L_SFAV, K_NOTE, 83, 0, 7);
+  mset(L_SELALL, K_NOTE, 96, 0, 7);         mset(L_SSELALL, K_NOTE, 97, 0, 7);
+  mset(L_NOTEREP, K_NOTE, 98, 0, 7);
+  mset(L_STRIP, K_CC, 16, 0, 7);
 );
 
 function gmem_has_map() ( gmem[G_MAP] > 0 && gmem[G_MAP + 1] == MAP_LAYOUT; );
@@ -1116,11 +1150,28 @@ function learn_confirm() local(i)
   i = 0; loop(NSTEPS, M_KIND[i] = LM_KIND[i]; M_NUM[i] = LM_NUM[i]; M_ENC[i] = LM_ENC[i]; M_CHN[i] = LM_CHN[i]; i += 1);
   memset(REL_LAST, -1, NSTEPS);
   map_to_gmem();                 // R20.9, R20.14
+  ctrl = CT_LEARNED;
   learn_active = 0;
   strcpy(#slab_msg, "Learned controls saved.");
 );
 
 function say(text) ( strcpy(#slab_msg, text); );
+
+function ctrl_name(k)
+(
+  k == CT_SLAB ? "AlphaTheta SLAB" : k == CT_PADS ? "Pads only" : "Learned";
+);
+
+// R20.17: the learned entry is the last confirmed Learn, shared through gmem
+function ctrl_set(k)
+(
+  k == CT_LEARNED && !gmem_has_map() ? say("Nothing learned yet. Run Learn first.") : (
+    k == CT_SLAB ? map_slab() : k == CT_PADS ? map_pads() : map_from_gmem();
+    memset(REL_LAST, -1, NSTEPS);
+    ctrl = k;
+    sprintf(#slab_msg, "MIDI controller: %s", ctrl_name(k));
+  );
+);
 
 function later(k) ( sprintf(#slab_msg, "%s: comes with slice 5.", learn_name(k)); );
 
@@ -1482,10 +1533,10 @@ function route_midi(offset, m1, m2, m3) local(st, ch, i, k, val, hit)
   hit;
 );
 
-// a new instance takes the last confirmed map, else the defaults (R20.14);
-// a saved project's own map arrives later through @serialize
+// a new instance starts with the SLAB preset (R20.1); a saved project's own
+// map arrives later through @serialize
 !map_init ? (
-  gmem_has_map() ? map_from_gmem() : map_defaults();
+  map_slab(); ctrl = CT_SLAB;
   memset(REL_LAST, -1, NSTEPS);
   map_init = 1;
 );
@@ -1578,6 +1629,9 @@ learn_req == 1 ? (
   learn_active && learn_done ? learn_confirm();
 );
 learn_req = 0;
+// controller list (R20.17); held pads' note-offs may change meaning
+ctrl_req && !learn_active ? ( all_voices_off(); ctrl_set(ctrl_req - 1); );
+ctrl_req = 0;
 
 // Pad events are queued with their sample offset and fired in @sample, so
 // finger drumming keeps its timing inside the block. Mouse clicks go first.
@@ -1721,7 +1775,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 10 ? (
+  ser_ver >= 1 && ser_ver <= 11 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -1757,9 +1811,7 @@ file_avail(0) >= 0 ? (
       );
       memset(REL_LAST, -1, NSTEPS);
       map_init = 1;
-      // after a restart, a project's learned map is the default for new
-      // instances too, even before the load action has run (R20.14)
-      !gmem_has_map() ? map_to_gmem();
+      ctrl = CT_LEARNED;          // before v11 every saved map came from Learn
     ) : ser_ver >= 3 ? (
       // test builds with other step ids: read past, keep the current map
       file_var(0, ser_skip);
@@ -1772,6 +1824,10 @@ file_avail(0) >= 0 ? (
     ) : grid_keep = 0;
     ser_ver >= 9 ? ( file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop); )
                  : ( auto_mode = 0; sl_k = 0; fs_drop = 0; );            // R13.8, R14.9
+    ser_ver >= 11 ? file_var(0, ctrl);
+    // after a restart, a project's learned map is the Learned entry for
+    // other instances too, even before the load action has run (R20.14)
+    ser_ver >= 5 && ctrl == CT_LEARNED && !gmem_has_map() ? map_to_gmem();
     ser_has ? (
       // undo restores run this too: only reload when the source really changed
       !has_source || strcmp(#ser_path, #path) != 0 || ser_start != sec_start || abs(ser_len - sec_len) > 0.000001 ? (
@@ -1785,7 +1841,7 @@ file_avail(0) >= 0 ? (
     hist_reset();
   );
 ) : (
-  ser_ver = 10;
+  ser_ver = 11;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -1802,6 +1858,7 @@ file_avail(0) >= 0 ? (
   );
   file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
   file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop);
+  file_var(0, ctrl);
 );
 
 @gfx 900 760
@@ -2308,8 +2365,6 @@ button(bx, bar_y, bw, bh, "Poly", slider3 == 1) ? ( slider3 = 1; slider_automate
 button(bx, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4; slider_automate(slider4); ); bx += bw + 22;
 button(bx, bar_y, bw + 16, bh, "Lazy chop", slider5 == 1) ? ( slider5 = !slider5; slider_automate(slider5); ); bx += bw + 28;
 button(bx, bar_y, bw, bh, "Delete", 0) && sel_count() ? delsel_req = 1;                    // R11.1, R11.4
-bx += bw + 12;
-button(bx, bar_y, bw, bh, "Learn", learn_active) && !learn_active ? learn_req = 1;            // R20.2
 // right-aligned: Freeze, then a gap, then zoom out / in
 bx = gfx_w - pad - 70;
 button(bx, bar_y, 70, bh, "Freeze", freeze) ? freeze = !freeze;                               // R7.7
@@ -2489,6 +2544,17 @@ auto_mode == 0 ? (
   button(ax + aw / 2 + 3, sy + 102, aw / 2 - 3, sh, "Shift >", 0) && ready && sl_on ? auto_req = 3;
   rgb(C_DIM); text_at(ax, sy + 134, sl_on ? "Shift moves all slices" : "Shift: after slicing");
 );
+// MIDI controller list (R20.16-R20.18) and Learn (R20.2)
+rgb(C_DIM); text_at(ax, sy + 172, "MIDI controller");
+button(ax, sy + 190, aw, sh, sprintf(#t, "%s  ▾", ctrl_name(ctrl)), 0) && !learn_active ? (
+  gfx_x = ax; gfx_y = sy + 190 + sh;
+  menu_pick = gfx_showmenu(sprintf(#menu, "%s%s|%s%s|%s%s",
+    ctrl == CT_SLAB ? "!" : "", ctrl_name(CT_SLAB),
+    ctrl == CT_PADS ? "!" : "", ctrl_name(CT_PADS),
+    ctrl == CT_LEARNED ? "!" : gmem_has_map() ? "" : "#", ctrl_name(CT_LEARNED)));
+  menu_pick > 0 ? ctrl_req = menu_pick;
+);
+button(ax, sy + 224, aw, sh, "Learn", learn_active) && !learn_active ? learn_req = 1;           // R20.2
 
 mouse_down = mouse_cap & 1;      // undo waits for the end of a drag
 

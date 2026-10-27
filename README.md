@@ -93,22 +93,33 @@ file is moved or renamed, ReaFlip shows a message and keeps all cues.
 
 ## MIDI controller
 
-Pads default to notes 0–15 on any channel. Assign the rest with **Learn**:
+Pick the controller under **MIDI controller** next to the pads:
+
+| Entry | Assignment |
+|---|---|
+| **AlphaTheta SLAB** (default) | Every control in the table below, ready to play |
+| **Pads only** | Notes 0–15 on any channel as pads 1–16 |
+| **Learned** | Your last confirmed **Learn** run |
+
+For any other controller, run **Learn**:
 
 - The window walks through each control: pads, dial, Shift, Delete, arrows,
   encoders, buttons.
 - It detects the dial and encoder encoding by itself.
 - Skip optional steps, then confirm.
 
-The confirmed map becomes the default for new instances. It survives a
-REAPER restart once the load action has run.
+The confirmed map becomes the **Learned** entry in every instance. It
+survives a REAPER restart once the load action has run.
 
 ### SLAB setup
 
 1. Hold **ENCODER MODE** to switch the SLAB to General MIDI mode.
 2. In *Preferences → Audio → MIDI Inputs*, right-click the SLAB and choose
    **Enable input**. "Control messages only" is not enough.
-3. Run **Learn**.
+
+New instances use the SLAB preset; no Learn needed. The touch strip
+responds in the SLAB's strip mode 2 (press STRIP MODE on the unit if it does
+not react).
 
 | SLAB control | Function |
 |---|---|

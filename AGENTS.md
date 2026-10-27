@@ -236,17 +236,20 @@ project rate (resample on playback, linear interpolation is fine for v1).
 
 ## MIDI and SLAB
 
-SLAB runs in **General** (standard MIDI) mode (C3). Defaults until learned:
+SLAB runs in **General** (standard MIDI) mode (C3).
 
-| Setting | Default | Notes |
-|---|---|---|
-| `pad_notes` | 0..15 | pads 1–16 (R20.1) — what SLAB sends from its default bank (tested); other controllers use Learn |
-| `midi_channel` | 0 = any | 1–16 filters (R20.11) |
-| `dial` | unset | CC + encoding: `relative_center`, `relative_twos`, `relative_signbit`, `absolute` |
-| `shift`, `delete`, arrows, buttons, encoders 1–4 + presses, touch strip, strip mode | unset | learned (R20.7); unlearned functions are ignored (R21.24) |
+**Controller list (R20.1, R20.16–R20.18, spec r11):** `ctrl` per instance,
+saved in `@serialize` (format v11): 0 AlphaTheta SLAB (`map_slab`, the
+default for new instances), 1 Pads only (`map_pads`: notes 0–15, any
+channel), 2 Learned (the gmem map, greyed in the menu while gmem has none).
+`map_slab` is the user's Learn run from 2026-10-23, checked against the
+official list. To add a controller: a `map_<name>()` from a Learn run on the
+real unit plus its official MIDI list, a new `CT_` id, an entry in
+`ctrl_name` and in the menu — never guessed messages. Projects saved before
+v11 come back as Learned, since their map came from Learn. Unlearned
+functions are ignored (R21.24).
 
-The actual SLAB messages are **unknown** (Q1). Never hard-code guesses beyond
-the defaults above. Learn infers dial encoding from the value pattern:
+Learn infers dial encoding from the value pattern:
 near 64 ± n → `relative_center`; 1–3 / 125–127 → `relative_twos`;
 1–3 / 65–67 → `relative_signbit`; monotonic 0–127 sweep → `absolute`.
 Function assignments are in R21.
@@ -286,13 +289,13 @@ version written last, layout id, pad channel, 16 pads,
 kind/number/encoding/channel per Learn step). Controls match their exact
 channel, since controllers reuse note numbers across channels. Bump
 `MAP_LAYOUT` in both files whenever the Learn step list changes, so stale
-maps are ignored. New instances in the same REAPER session start with the
-gmem map; an instance restoring a map from a project also publishes it when
-gmem has none. JSFX can't write
+maps are ignored. The gmem map is the Learned entry of the controller list;
+new instances start with the SLAB preset, not with it. An instance restoring
+a Learned map from a project also publishes it when gmem has none. JSFX can't write
 files, so `ReaFlip_Load.lua` copies the gmem map into ExtState
 (`ReaFlip/midi_map`, persisted) on each run, and after a restart puts it back
-into gmem. After a restart a learned map is the default again once the load
-action has run, or once a project with a learned instance is opened.
+into gmem. After a restart the Learned entry is available again once the
+load action has run, or once a project with a learned instance is opened.
 
 ## Constraints & conventions
 

@@ -3,8 +3,8 @@ feature: slab-sampler
 title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-10-23
-revision: 10
+date: 2026-10-27
+revision: 11
 status: ready
 ---
 
@@ -275,7 +275,10 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R19.5 — If there is nothing to undo or redo, then the system shall leave everything unchanged.
 
 ### R20: Learn SLAB controls
-- R20.1 — The system shall use MIDI notes 0 to 15 as pads 1 to 16 in a new instance, on any MIDI channel. _(why: what SLAB sends from its default pad bank in general MIDI mode)_
+- R20.1 — The system shall use the AlphaTheta SLAB preset in a new instance. _(why: the controller this instrument is built around; its preset comes from a Learn run on the unit, checked against AlphaTheta's MIDI message list)_
+- R20.16 — The system shall offer a MIDI controller list with the entries AlphaTheta SLAB, Pads only (notes 0 to 15 as pads 1 to 16, on any channel) and Learned.
+- R20.17 — When the producer picks an entry from the MIDI controller list, the system shall use that entry's assignment in this instance.
+- R20.18 — While no Learn result has been confirmed, the system shall show the Learned entry as unavailable.
 - R20.2 — When the producer starts learning, the system shall ask for pads 1 to 16 to be hit in order and show which pads have been captured.
 - R20.3 — While learning pads, if the producer hits a note already captured for another pad, then the system shall reject it and ask again.
 - R20.4 — When the producer turns the dial clockwise and then counter-clockwise during learning, the system shall record which control the dial is.
@@ -284,8 +287,8 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R20.6 — If the dial's encoding cannot be recognised, then the system shall say so and ask to turn the dial again.
 - R20.7 — When the producer learns any other SLAB function listed in R21, the system shall record the control that sends it.
 - R20.8 — When the producer skips an optional step, the system shall leave that function unassigned.
-- R20.9 — When the producer confirms the learned result, the system shall use it in this instance.
-- R20.14 — When the producer confirms the learned result, the system shall use it as the default for new instances.
+- R20.9 — When the producer confirms the learned result, the system shall use it in this instance and show Learned as its controller.
+- R20.14 — When the producer confirms the learned result, the system shall keep it as the Learned entry for every instance, also after a restart.
 - R20.15 — When the producer learns a Shift combination (Shift + dial, Auto Set, Favourite, Select All) and the controller sends the same message as without Shift, the system shall use the learned Shift control to tell the two apart. _(why: some controllers change what a control sends while Shift is held, others don't)_
 - R20.10 — When the producer cancels learning, the system shall restore the previous assignment.
 - R20.11 — While a MIDI channel is set, the system shall ignore SLAB messages on other channels.
@@ -382,7 +385,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - SLAB Quantize size (Shift + Scene Size −/+); Quantize snaps to 1/8 beat only.
 
 ## Open questions
-- Q1 — Pads are known: notes 0–15 for pads 1–16 in the default bank (tested 2026-10-22). Still unknown: what SLAB sends for the other controls in R20 and R21 (CC numbers, dial and encoder encoding, whether Shift, Delete and the arrows send anything)? The operating instructions refer to a separate MIDI message list at alphatheta.com/support, not found yet. Until then the learn step (R20) discovers it. _(Christian to supply the list, or confirm by learning on the unit)_
+None.
 
 ## Revisions
 - r1 — initial version
@@ -395,3 +398,4 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - r8 — time stretch moved into scope: Sync to the project tempo, per-cue stretch and key shift that keeps tempo (R23 added, R17.8 changed, `stretch-time` added, Out of scope narrowed).
 - r9 — view follows pad hits: cue start at 10 % on a hit and again when it stops (R7.10, R7.11); overview view box can be dragged (R7.12).
 - r10 — stretch algorithm per instance: drums or melodic, drums by default (R23.11 added).
+- r11 — preconfigured controllers: MIDI controller list with AlphaTheta SLAB (default), Pads only and Learned (R20.1, R20.9, R20.14 changed, R20.16–R20.18 added); Q1 resolved by AlphaTheta's MIDI message list and a Learn run on the unit.
