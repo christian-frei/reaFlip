@@ -127,15 +127,48 @@ G_MAP = 8192; MAP_LAYOUT = 2; MAP_SIZE = 19 + NSTEPS * 4;
 // assigning state, which would wipe a loaded sample on a samplerate change.
 S_EMPTY = 0; S_LOADING = 1; S_PEAKS = 2; S_READY = 3; S_MISSING = 4;
 
-// one dark theme, colours defined once
-C_BG = 0x18181b; C_PANEL = 0x232327; C_FRAME = 0x3a3a40; C_TEXT = 0xe8e8ea;
-C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_WAVE_DIM = 0x2f6f8f; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
-C_BTN = 0x34343a; C_BTN_HOT = 0x46464e; C_BTN_ON = 0x5a5a66; C_PAD_EMPTY = 0x2c2c31;
 PALETTE = 1729000;                // one colour per pad (R7.3)
 PALETTE[0] = 0xff5a5a; PALETTE[1] = 0xff8c42; PALETTE[2] = 0xffc23d; PALETTE[3] = 0xd4e157;
 PALETTE[4] = 0x7ed957; PALETTE[5] = 0x3ddc97; PALETTE[6] = 0x2ec4b6; PALETTE[7] = 0x3fb6ff;
 PALETTE[8] = 0x5a8dff; PALETTE[9] = 0x8c6bff; PALETTE[10] = 0xbf5af2; PALETTE[11] = 0xff5ac8;
 PALETTE[12] = 0xff7a8a; PALETTE[13] = 0xc9a26b; PALETTE[14] = 0x9aa5b1; PALETTE[15] = 0xe6e6e6;
+
+// two looks per instance (R7.13): Standard, a dark theme, and LCARS; each
+// look's colours are defined once, here
+LC_O = 0xff9900; LC_P = 0xffcc99; LC_L = 0xcc99cc; LC_B = 0x9999ff; LC_R = 0xcc6666;
+
+function mix(c1, c2, k)
+(
+  (floor(((c1 >> 16) & 255) * (1 - k) + ((c2 >> 16) & 255) * k + 0.5) << 16)
+  + (floor(((c1 >> 8) & 255) * (1 - k) + ((c2 >> 8) & 255) * k + 0.5) << 8)
+  + floor((c1 & 255) * (1 - k) + (c2 & 255) * k + 0.5);
+);
+
+// LCARS cue colours: one gradient from pad 1 to pad 16, orange, peach,
+// lilac, blue (R7.15)
+LPAL = 1729100;
+lp_i = 0;
+loop(NPADS,
+  lp_u = lp_i / (NPADS - 1) * 3; lp_s = min(floor(lp_u), 2); lp_k = lp_u - lp_s;
+  LPAL[lp_i] = mix(lp_s == 0 ? LC_O : lp_s == 1 ? LC_P : LC_L, lp_s == 0 ? LC_P : lp_s == 1 ? LC_L : LC_B, lp_k);
+  lp_i += 1;
+);
+
+function set_look()
+(
+  look ? (
+    C_BG = 0x000000; C_PANEL = 0x0b0b14; C_FRAME = 0x333355; C_TEXT = LC_O;
+    C_DIM = LC_L; C_WAVE = 0x99ccff; C_WAVE_DIM = 0x5e7db8; C_ERR = 0xff5555; C_WARN = 0xffcc33;
+    C_BTN = 0x9999cc; C_BTN_HOT = 0xb8b8e6; C_BTN_ON = LC_O; C_PAD_EMPTY = 0x1c1c2a;
+    PALC = LPAL;
+  ) : (
+    C_BG = 0x18181b; C_PANEL = 0x232327; C_FRAME = 0x3a3a40; C_TEXT = 0xe8e8ea;
+    C_DIM = 0x8a8a92; C_WAVE = 0x5ac8fa; C_WAVE_DIM = 0x2f6f8f; C_ERR = 0xff6b6b; C_WARN = 0xffb347;
+    C_BTN = 0x34343a; C_BTN_HOT = 0x46464e; C_BTN_ON = 0x5a5a66; C_PAD_EMPTY = 0x2c2c31;
+    PALC = PALETTE;
+  );
+);
+set_look();
 
 function close_file()
 (
@@ -1775,7 +1808,7 @@ file_avail(0) >= 0 ? (
   // reading: project open, or an undo point being restored
   ser_ver = 0;
   file_var(0, ser_ver);
-  ser_ver >= 1 && ser_ver <= 11 ? (
+  ser_ver >= 1 && ser_ver <= 12 ? (
     file_string(0, #ser_path);
     file_var(0, ser_start);
     file_var(0, ser_len);
@@ -1825,6 +1858,7 @@ file_avail(0) >= 0 ? (
     ser_ver >= 9 ? ( file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop); )
                  : ( auto_mode = 0; sl_k = 0; fs_drop = 0; );            // R13.8, R14.9
     ser_ver >= 11 ? file_var(0, ctrl);
+    look = 0; ser_ver >= 12 ? file_var(0, look);         // R7.13
     // after a restart, a project's learned map is the Learned entry for
     // other instances too, even before the load action has run (R20.14)
     ser_ver >= 5 && ctrl == CT_LEARNED && !gmem_has_map() ? map_to_gmem();
@@ -1841,7 +1875,7 @@ file_avail(0) >= 0 ? (
     hist_reset();
   );
 ) : (
-  ser_ver = 11;
+  ser_ver = 12;
   file_var(0, ser_ver);
   strcpy(#ser_path, #path);
   file_string(0, #ser_path);
@@ -1859,12 +1893,58 @@ file_avail(0) >= 0 ? (
   file_var(0, has_grid); file_var(0, bpm); file_var(0, gs);
   file_var(0, auto_mode); file_var(0, sl_k); file_var(0, fs_drop);
   file_var(0, ctrl);
+  file_var(0, look);
 );
 
 @gfx 900 760
 function rgb(c) ( gfx_set(((c >> 16) & 255) / 255, ((c >> 8) & 255) / 255, (c & 255) / 255); );
 
-function text_at(x, y, s) ( gfx_x = x; gfx_y = y; gfx_drawstr(s); );
+function upcase(s) local(i, c)
+(
+  i = 0;
+  loop(strlen(s), c = str_getchar(s, i); c >= 97 && c <= 122 ? str_setchar(s, i, c - 32); i += 1);
+  s;
+);
+
+// LCARS writes everything in capitals
+function text_at(x, y, s) ( gfx_x = x; gfx_y = y; look ? gfx_drawstr(upcase(strcpy(#ta, s))) : gfx_drawstr(s); );
+function measure(s) ( look ? gfx_measurestr(upcase(strcpy(#ta, s)), tw, th) : gfx_measurestr(s, tw, th); );
+
+// A plugin can't ship a font: take Antonio if installed, else a condensed
+// system face (R7.16). A missing face falls back to a wide default, so a
+// face counts as found when it sets text clearly narrower than Arial.
+function try_face(name, wa) local(w, h)
+(
+  !lc_ok ? (
+    gfx_setfont(3, name, 20); gfx_measurestr("MMMMMMMMMM", w, h);
+    w < wa * 0.9 ? ( strcpy(#lc_face, name); lc_ok = 1; );
+  );
+);
+
+function pick_face() local(wa, h)
+(
+  gfx_setfont(3, "Arial", 20); gfx_measurestr("MMMMMMMMMM", wa, h);
+  try_face("Antonio", wa); try_face("Avenir Next Condensed", wa);
+  try_face("Bahnschrift Condensed", wa); try_face("Arial Narrow", wa);
+  !lc_ok ? strcpy(#lc_face, "Arial");
+  lc_picked = 1;
+);
+
+// LCARS bold needs Antonio's static Bold face installed; the variable font
+// alone has no bold face and macOS silently draws a wide default instead
+function font_big() ( look ? gfx_setfont(1, #lc_face, 22, 'b') : gfx_setfont(1, "Arial", 17); );
+function font_small() ( look ? gfx_setfont(2, #lc_face, 16) : gfx_setfont(2, "Arial", 13); );
+
+// a box with round left and/or right ends: LCARS buttons, pads and bars
+function rbox(x, y, w, hh, r, lr, rr)
+(
+  // whole-pixel radius and centres: a half-pixel radius made the round ends
+  // bulge past the body's edge; a full pill is exactly one circle tall
+  r >= floor((hh - 1) / 2) ? ( r = floor((hh - 1) / 2); hh = 2 * r + 1; ) : r = floor(r);
+  gfx_rect(x + (lr ? r : 0), y, w - (lr ? r : 0) - (rr ? r : 0), hh);
+  lr ? ( gfx_rect(x, y + r, r + 1, hh - 2 * r); gfx_circle(x + r, y + r, r, 1, 1); gfx_circle(x + r, y + hh - 1 - r, r, 1, 1); );
+  rr ? ( gfx_rect(x + w - r - 1, y + r, r + 1, hh - 2 * r); gfx_circle(x + w - 1 - r, y + r, r, 1, 1); gfx_circle(x + w - 1 - r, y + hh - 1 - r, r, 1, 1); );
+);
 
 function inside(x, y, w, hh) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + hh; );
 
@@ -1974,19 +2054,64 @@ function tap() local(now, t, bl)
 function button(x, y, w, hh, label, on) local(hot)
 (
   hot = inside(x, y, w, hh);
-  rgb(on ? C_BTN_ON : hot ? C_BTN_HOT : C_BTN); gfx_rect(x, y, w, hh);
-  rgb(on ? C_TEXT : C_DIM);
-  gfx_measurestr(label, tw, th);
-  text_at(x + (w - tw) / 2, y + (hh - th) / 2, label);
+  rgb(on ? C_BTN_ON : hot ? C_BTN_HOT : C_BTN);
+  look ? (
+    // LCARS: a pill, black label at the bottom right
+    rbox(x, y, w, hh, hh / 2, 1, 1);
+    rgb(0); measure(label);
+    text_at(tw > w - hh ? x + (w - tw) / 2 : x + w - tw - hh / 2 + 2, y + hh - th - 3, label);
+  ) : (
+    gfx_rect(x, y, w, hh);
+    rgb(on ? C_TEXT : C_DIM);
+    measure(label);
+    text_at(x + (w - tw) / 2, y + (hh - th) / 2, label);
+  );
   hot && clicked;
+);
+
+// LCARS frame: elbows top and bottom, bars, and one coloured block per
+// section down the left side (R7.13)
+function seg(y0, y1, c, label)
+(
+  y1 > y0 ? (
+    rgb(c); gfx_rect(fm, y0, fw, y1 - y0);
+    rgb(0); measure(label);
+    y1 - y0 > th + 4 ? text_at(fm + fw - tw - 6, y1 - th - 2, label);
+  );
+);
+
+function lcars_frame() local(eb, by, tx, x0, x1)
+(
+  eb = gfx_h - fm - 70; by = gfx_h - fm - fb; x0 = fm + fw;   // tall enough for the corner circle
+  rgb(LC_O);
+  gfx_rect(fm + 34, fm, fw - 34, ov_y - 4 - fm); gfx_rect(fm, fm + 34, 35, ov_y - 38 - fm); gfx_circle(fm + 34, fm + 34, 34, 1, 1);
+  gfx_rect(x0, fm + fb, 18, 18); rgb(C_BG); gfx_circle(x0 + 18, fm + fb + 18, 18, 1, 1);
+  font_big(); measure("ReaFlip");
+  tx = gfx_w - fm - 70 - tw;
+  rgb(LC_O); gfx_rect(x0, fm, max(0, tx - 110 - x0), fb);
+  rgb(LC_L); gfx_rect(tx - 104, fm, 90, fb);
+  rgb(LC_O); text_at(tx, fm + fb / 2 - th / 2, "ReaFlip");
+  rgb(LC_P); rbox(tx + tw + 10, fm, gfx_w - fm - tx - tw - 10, fb, fb / 2, 0, 1);
+  font_small();
+  seg(ov_y, mw_y - 4, LC_L, "02 Source");
+  seg(mw_y, info_y - 4, LC_B, "03 Cues");
+  seg(info_y, pads_y - 4, LC_P, "04 Control");
+  seg(pads_y, eb - 4, LC_R, "05 Pads");
+  rgb(LC_O);
+  gfx_rect(fm + 34, eb, fw - 34, gfx_h - fm - eb); gfx_rect(fm, eb, 35, gfx_h - fm - eb - 34); gfx_circle(fm + 34, gfx_h - fm - 35, 34, 1, 1);
+  gfx_rect(x0, by - 18, 18, 18); rgb(C_BG); gfx_circle(x0 + 18, by - 19, 18, 1, 1);
+  x1 = x0 + floor((gfx_w - fm - x0) * 0.45);
+  rgb(LC_O); gfx_rect(x0, by, x1 - x0, fb);
+  rgb(LC_B); gfx_rect(x1 + 6, by, 60, fb);
+  rgb(LC_L); rbox(x1 + 72, by, gfx_w - fm - x1 - 72, fb, fb / 2, 0, 1);
 );
 
 // Grid edit's controls take the parameter row's place (R8). Cancel puts
 // back the grid as it was on entering (R8.9).
 function grid_row() local(gx, gw)
 (
-  gw = floor((gfx_w - 2 * pad - 8 * row_gap) / 9);
-  gx = pad;
+  gw = floor((cr - cl - 8 * row_gap) / 9);
+  gx = cl;
   rgb(C_PANEL); gfx_rect(gx, row_y, gw, row_h);
   rgb(C_WARN); gfx_rect(gx, row_y, gw, 2);
   rgb(C_DIM); text_at(gx + 8, row_y + 6, "BPM (click, type)");
@@ -2047,53 +2172,69 @@ clicked = (mouse_cap & 1) && !(last_cap & 1);
 released = !(mouse_cap & 1) && (last_cap & 1);
 shift_held = mouse_cap & 8;
 
+set_look();
+look && !lc_picked ? pick_face();
 rgb(C_BG); gfx_rect(0, 0, gfx_w, gfx_h);
 pad = 12;
 
-// header: file name, length and format, eject
+// layout: the content area, inside the LCARS frame when that look is on
+fm = 8; fw = 96; fb = 18;        // LCARS frame: margin, column width, bar height
+look ? ( cl = fm + fw + 14; cr = gfx_w - fm; ct = fm + fb + 4; cb = gfx_h - fm - fb - 8; )
+     : ( cl = pad; cr = gfx_w - pad; ct = 0; cb = gfx_h - pad; );
 hdr_h = 52;
-rgb(C_PANEL); gfx_rect(0, 0, gfx_w, hdr_h);
-gfx_setfont(1, "Arial", 17);
+ov_x = cl; ov_y = ct + hdr_h + 12; ov_w = cr - cl; ov_h = 60;
+mw_x = cl; mw_y = ov_y + ov_h + 8; mw_w = cr - cl; mw_h = 170;
+info_y = mw_y + mw_h + 6;
+bar_y = info_y + 22; bh = 26;
+row_y = bar_y + bh + 10; row_h = 40;
+pads_y = row_y + row_h + 12;
+look ? lcars_frame();
+
+// header: file name, length and format, eject
+!look ? ( rgb(C_PANEL); gfx_rect(0, 0, gfx_w, hdr_h); );
+font_big();
 has_source ? (
   basename(#path, #name);
-  rgb(C_TEXT); text_at(pad, 8, #name);
-  gfx_setfont(2, "Arial", 13);
+  hdr_l = cr - 70;   // left end of the controls on the right; the name stops short of it
+  font_small();
   rgb(C_DIM);
-  state == S_MISSING ? text_at(pad, 30, "source missing")
-  : state == S_READY ? text_at(pad, 30, sprintf(#t, "%d:%06.3f  |  %g kHz  |  %s",
+  state == S_MISSING ? text_at(cl, ct + 30, "source missing")
+  : state == S_READY ? text_at(cl, ct + 30, sprintf(#t, "%d:%06.3f  |  %g kHz  |  %s",
       floor(sec_len / 60), sec_len - floor(sec_len / 60) * 60, fsr / 1000, nch == 1 ? "mono" : "stereo"))
-  : text_at(pad, 30, "loading ...");
-  button(gfx_w - pad - 70, 13, 70, 26, "Eject", 0) ? eject();                // R3.1
+  : text_at(cl, ct + 30, "loading ...");
+  button(cr - 70, ct + 13, 70, 26, "Eject", 0) ? eject();                // R3.1
   state == S_READY ? (
-    hx = gfx_w - pad - 70 - 16 - 84;
-    button(hx, 13, 84, 26, "Quantize", slider6) ? ( slider6 = !slider6; slider_automate(slider6); );   // R10.10
-    hx -= 64; button(hx, 13, 58, 26, "Sync", slider7) ? ( slider7 = !slider7; slider_automate(slider7); );   // R23.2
-    hx -= 80; button(hx, 13, 74, 26, slider8 ? "Melodic" : "Drums", 0) ? ( slider8 = !slider8; slider_automate(slider8); );   // R23.11
+    hx = cr - 70 - 16 - 84;
+    button(hx, ct + 13, 84, 26, "Quantize", slider6) ? ( slider6 = !slider6; slider_automate(slider6); );   // R10.10
+    hx -= 64; button(hx, ct + 13, 58, 26, "Sync", slider7) ? ( slider7 = !slider7; slider_automate(slider7); );   // R23.2
+    hx -= 80; button(hx, ct + 13, 74, 26, slider8 ? "Melodic" : "Drums", 0) ? ( slider8 = !slider8; slider_automate(slider8); );   // R23.11
     hx -= 10;
     ana_state ? (
-      hx -= 76; button(hx, 13, 70, 26, "Cancel", 0) ? ana_cancel_req = 1;                             // R4.4
+      hx -= 76; button(hx, ct + 13, 70, 26, "Cancel", 0) ? ana_cancel_req = 1;                             // R4.4
       rgb(C_DIM); sprintf(#t, "Analysing %d%%", floor(ana_progress() * 100));                          // R4.3
-      gfx_measurestr(#t, tw, th); text_at(hx - tw - 12, 20, #t);
+      measure(#t); text_at(hx - tw - 12, ct + 20, #t); hdr_l = hx - tw - 12;
     ) : (
-      hx -= 64; button(hx, 13, 58, 26, "Grid", ge_on) ? (                                              // R8.1
+      hx -= 64; button(hx, ct + 13, 58, 26, "Grid", ge_on) ? (                                              // R8.1
         ge_on ? ( ge_on = 0; bpm_typing = 0; )                                                 // = Save (R8.8)
               : ( ge_on = 1; ge_has0 = has_grid; ge_bpm0 = bpm; ge_gs0 = gs; );
       );
-      hx -= 40; button(hx, 13, 34, 26, "x2", 0) && has_grid ? set_bpm(bpm * 2);                         // R6.6
-      hx -= 40; button(hx, 13, 34, 26, "/2", 0) && has_grid ? set_bpm(bpm / 2);
-      gfx_setfont(1, "Arial", 17); rgb(has_grid ? C_TEXT : slider7 ? C_WARN : C_DIM);
+      hx -= 40; button(hx, ct + 13, 34, 26, "x2", 0) && has_grid ? set_bpm(bpm * 2);                         // R6.6
+      hx -= 40; button(hx, ct + 13, 34, 26, "/2", 0) && has_grid ? set_bpm(bpm / 2);
+      font_big(); rgb(has_grid ? C_TEXT : slider7 ? C_WARN : C_DIM);
       has_grid ? sprintf(#t, "%.2f BPM", bpm) : strcpy(#t, slider7 ? "Sync needs a tempo" : "--- BPM");   // R6.5, R4.7, R23.4
-      gfx_measurestr(#t, tw, th); text_at(hx - tw - 14, 17, #t);
-      gfx_setfont(2, "Arial", 13);
+      measure(#t); text_at(hx - tw - 14, ct + 17, #t); hdr_l = hx - tw - 14;
+      font_small();
     );
   );
+  // drawn last and clipped, so a long file name never runs into the BPM
+  font_big(); rgb(C_TEXT); strcpy(#ta, #name); look ? upcase(#ta);
+  gfx_x = cl; gfx_y = ct + 8; gfx_drawstr(#ta, 0, hdr_l - 12, ct + 40);
+  font_small();
 ) : (
-  rgb(C_DIM); text_at(pad, 17, "No source loaded");
+  rgb(C_DIM); text_at(cl, ct + 17, "No source loaded");
 );
-gfx_setfont(2, "Arial", 13);
+font_small();
 
-ov_x = pad; ov_y = hdr_h + pad; ov_w = gfx_w - 2 * pad; ov_h = 60;
-mw_x = pad; mw_y = ov_y + ov_h + 8; mw_w = gfx_w - 2 * pad; mw_h = 170;
 rgb(C_PANEL); gfx_rect(ov_x, ov_y, ov_w, ov_h); gfx_rect(mw_x, mw_y, mw_w, mw_h);
 
 state == S_READY ? (
@@ -2144,7 +2285,7 @@ state == S_READY ? (
   gfx_a = 1;
   j = 0;
   loop(NPADS,
-    CU_SET[j] ? ( rgb(PALETTE[CU_COL[j]]); cx = ov_x + CU_START[j] / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1); );
+    CU_SET[j] ? ( rgb(PALC[CU_COL[j]]); cx = ov_x + CU_START[j] / sec_len * ov_w; gfx_line(cx, ov_y, cx, ov_y + ov_h - 1); );
     j += 1;
   );
   gfx_set(1, 1, 1);
@@ -2155,7 +2296,7 @@ state == S_READY ? (
   loop(NPADS,
     CU_SET[j] && CU_END[j] >= 0 ? (
       x0 = max(mw_x, t2x(CU_START[j])); x1 = min(mw_x + mw_w, t2x(CU_END[j]));
-      x1 > x0 ? ( rgb(PALETTE[CU_COL[j]]); gfx_a = 0.18; gfx_rect(x0, mw_y, x1 - x0, mw_h); gfx_a = 1; );
+      x1 > x0 ? ( rgb(PALC[CU_COL[j]]); gfx_a = 0.18; gfx_rect(x0, mw_y, x1 - x0, mw_h); gfx_a = 1; );
     );
     j += 1;
   );
@@ -2195,7 +2336,7 @@ state == S_READY ? (
   j = 0;
   loop(NPADS,
     CU_SET[j] ? (
-      rgb(PALETTE[CU_COL[j]]);
+      rgb(PALC[CU_COL[j]]);
       cx = t2x(CU_START[j]);
       cx >= mw_x && cx < mw_x + mw_w ? (
         gfx_line(cx, mw_y, cx, mw_y + mw_h - 1);
@@ -2270,10 +2411,10 @@ state == S_READY ? (
   );
 ) : state == S_LOADING || state == S_PEAKS ? (
   // R4.3
-  bar_y = mw_y + mw_h / 2 - 4;
-  rgb(C_FRAME); gfx_rect(mw_x + 40, bar_y, mw_w - 80, 8);
-  rgb(C_WAVE); gfx_rect(mw_x + 40, bar_y, (mw_w - 80) * progress(), 8);
-  rgb(C_DIM); text_at(mw_x + 40, bar_y - 22, "Loading ...");
+  lb_y = mw_y + mw_h / 2 - 4;
+  rgb(C_FRAME); gfx_rect(mw_x + 40, lb_y, mw_w - 80, 8);
+  rgb(C_WAVE); gfx_rect(mw_x + 40, lb_y, (mw_w - 80) * progress(), 8);
+  rgb(C_DIM); text_at(mw_x + 40, lb_y - 22, "Loading ...");
 ) : state == S_MISSING ? (
   // R5.3, R5.5
   rgb(C_WARN); text_at(mw_x + 16, mw_y + 20, "The source file is missing:");
@@ -2314,7 +2455,7 @@ learn_active ? (
   ) : (
     learn_step > L_DIAL ? ( button(mw_x + mw_w - 170, mw_y + 10, 76, 26, "Skip", 0) ? learn_req = 2; );
     rgb(C_DIM); text_at(lx, ly, sprintf(#t, "Learn  -  step %d of %d", learn_step + 1, NSTEPS));
-    gfx_setfont(1, "Arial", 17); rgb(C_TEXT);
+    font_big(); rgb(C_TEXT);
     kk = step_kind(learn_step);
     kb = shift_base(learn_step);
     kk == 0 ? sprintf(#t, "Hit pad %d on the controller.", learn_count + 1)
@@ -2328,7 +2469,7 @@ learn_active ? (
     : kk == 2 ? sprintf(#t, kb >= 0 ? "Hold SHIFT and press %s." : "Press %s.", learn_name(kb >= 0 ? kb : learn_step))
     : strcpy(#t, "Slide a finger along the touch strip.");
     text_at(lx, ly + 34, #t);
-    gfx_setfont(2, "Arial", 13); rgb(C_DIM);
+    font_small(); rgb(C_DIM);
     text_at(lx, ly + 62, learn_step <= L_DIAL ? "Required."
       : kb >= 0 ? "If it sends the same as without SHIFT, that is fine. Skip it if there is no such combination."
       : "Skip it if your controller has no such control.");
@@ -2336,11 +2477,10 @@ learn_active ? (
   );
 );
 
-info_y = mw_y + mw_h + 6;
-has_err ? ( rgb(C_ERR); text_at(pad, info_y, #err); ) : (
+has_err ? ( rgb(C_ERR); text_at(cl, info_y, #err); ) : (
   rgb(C_DIM);
-  text_at(pad, info_y, sprintf(#t, "Strip: %s", strip_mode == 0 ? "filter" : strip_mode == 1 ? "pad level" : "crossfade"));
-  rgb(C_TEXT); text_at(pad + 110, info_y, #slab_msg);
+  text_at(cl, info_y, sprintf(#t, "Strip: %s", strip_mode == 0 ? "filter" : strip_mode == 1 ? "pad level" : "crossfade"));
+  rgb(C_TEXT); text_at(cl + 110, info_y, #slab_msg);
 );
 
 // MIDI monitor
@@ -2350,12 +2490,12 @@ mon_count ? (
   strcpy(#mtype, ms == 0x90 ? (mon_3 > 0 ? "note on" : "note off") : ms == 0x80 ? "note off"
     : ms == 0xB0 ? "CC" : ms == 0xA0 ? "aftertouch" : ms == 0xD0 ? "channel pressure"
     : ms == 0xE0 ? "pitch bend" : ms == 0xC0 ? "program change" : "other");
-  text_at(gfx_w - pad - 330, info_y,
+  text_at(cr - 330, info_y,
     sprintf(#t, "Last MIDI: %s  ch %d  %d / %d   (#%d)", #mtype, (mon_1 & 15) + 1, mon_2, mon_3, mon_count));
-) : text_at(gfx_w - pad - 330, info_y, "Last MIDI: nothing received yet");
+) : text_at(cr - 330, info_y, "Last MIDI: nothing received yet");
 
 // controls; mode changes go through slider_automate so REAPER records them
-bar_y = info_y + 22; bw = 64; bh = 26; bx = pad;
+bw = 64; bx = cl;
 button(bx, bar_y, bw, bh, src_playing ? "Pause" : "Play", src_playing) ? play_req = 1;      // R6.1, R6.2
 bx += bw + 12;
 button(bx, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); ); bx += bw;
@@ -2366,7 +2506,7 @@ button(bx, bar_y, bw + 10, bh, "Velocity", slider4 == 1) ? ( slider4 = !slider4;
 button(bx, bar_y, bw + 16, bh, "Lazy chop", slider5 == 1) ? ( slider5 = !slider5; slider_automate(slider5); ); bx += bw + 28;
 button(bx, bar_y, bw, bh, "Delete", 0) && sel_count() ? delsel_req = 1;                    // R11.1, R11.4
 // right-aligned: Freeze, then a gap, then zoom out / in
-bx = gfx_w - pad - 70;
+bx = cr - 70;
 button(bx, bar_y, 70, bh, "Freeze", freeze) ? freeze = !freeze;                               // R7.7
 bx -= 12 + 2 * 34;
 button(bx, bar_y, 34, bh, "-", 0) ? ( view_len *= 1.5; clamp_view(); );                     // R7.5
@@ -2377,20 +2517,22 @@ button(bx + 34, bar_y, 34, bh, "+", 0) ? ( view_len /= 1.5; clamp_view(); );
 // Parameter row for the selected cue (R17), in its colour (R17.13): drag up
 // or down to change, Cmd/Ctrl for fine steps (R17.10), Alt-click resets
 // (R17.9); Reverse toggles and Loop steps through its modes on a click.
-row_y = bar_y + bh + 10; row_h = 40; row_gap = 6;
-pw = floor((gfx_w - 2 * pad - 9 * row_gap) / 10);
+row_gap = 6;
+pw = floor((cr - cl - 9 * row_gap) / 10);
 // Several selected cues all change together (R17.14).
 nsel = sel_count();
 has_sel = state == S_READY && nsel > 0 && selected >= 0;
 ge_on ? grid_row() : (
 k = 0;
 loop(10,
-  px0 = pad + k * (pw + row_gap);
+  px0 = cl + k * (pw + row_gap);
   rgb(C_PANEL); gfx_rect(px0, row_y, pw, row_h);
-  has_sel ? ( rgb(nsel == 1 ? PALETTE[CU_COL[selected]] : C_TEXT); gfx_rect(px0, row_y, pw, 2); );
-  rgb(C_DIM); text_at(px0 + 8, row_y + 6, param_label(k));
-  has_sel ? ( rgb(C_TEXT); text_at(px0 + 8, row_y + 22, param_text(k, shown_val(k))); )
-          : text_at(px0 + 8, row_y + 22, "-");
+  // the selected cue's colour: a top line, in LCARS a cap on the left
+  has_sel ? ( rgb(nsel == 1 ? PALC[CU_COL[selected]] : C_TEXT); look ? gfx_rect(px0, row_y, 6, row_h) : gfx_rect(px0, row_y, pw, 2); );
+  tx0 = px0 + (look ? 12 : 8);
+  rgb(C_DIM); text_at(tx0, row_y + (look ? 2 : 6), param_label(k));
+  has_sel ? ( rgb(C_TEXT); text_at(tx0, row_y + 20, param_text(k, shown_val(k))); )
+          : text_at(tx0, row_y + 20, "-");
   clicked && has_sel && !learn_active && inside(px0, row_y, pw, row_h) ? (
     v = shown_val(k);
     q = 0;
@@ -2431,48 +2573,59 @@ bpm_typing ? (
     bpm_typing;
   ) : 0);
 );
-pads_y = row_y + row_h + 12;
 gap = 8;
-ps = floor(min((gfx_w - 2 * pad - 3 * gap) / 4, (gfx_h - pads_y - pad - 3 * gap) / 4));
+ps = floor(min((cr - cl - 3 * gap) / 4, (cb - pads_y - 3 * gap) / 4));
 ps = max(ps, 20);
-gfx_setfont(1, "Arial", 17);
+font_big();
 hover_pad = -1;
 p = 0;
 loop(NPADS,
   col = p % 4; row = 3 - floor(p / 4);
-  px = pad + col * (ps + gap); py = pads_y + row * (ps + gap);
+  px = cl + col * (ps + gap); py = pads_y + row * (ps + gap);
   sounding = V_ST[p] != VS_OFF && V_ST[p] != VS_PARK;
   learn_active && learn_step == L_PADS ? (
     rgb(p < learn_count ? C_BTN_ON : C_PAD_EMPTY);
   ) : CU_SET[p] ? (
-    rgb(PALETTE[CU_COL[p]]);
-    gfx_a = sounding ? 1 : 0.35;
+    // LCARS pads are solid and light up while sounding; overlapping round
+    // ends rule out transparency there
+    look ? rgb(sounding ? mix(PALC[CU_COL[p]], 0xffffff, 0.5) : PALC[CU_COL[p]])
+         : ( rgb(PALC[CU_COL[p]]); gfx_a = sounding ? 1 : 0.35; );
   ) : (
     rgb(C_PAD_EMPTY);                                     // R11.5
   );
-  gfx_rect(px, py, ps, ps);
+  // LCARS: each row of four reads as one bar with round outer ends
+  look ? rbox(px, py, ps, ps, min(ps / 2, 26), col == 0, col == 3) : gfx_rect(px, py, ps, ps);
   gfx_a = 1;
+  pad_ink = look ? (CU_SET[p] && !learn_active ? 0 : C_DIM) : sounding ? C_BG : C_TEXT;
   // outlines: Learn's next pad; selected cues, the dial's cue twice; a drop target (R12.5)
   inside(px, py, ps, ps) ? hover_pad = p;
   learn_active && learn_step == L_PADS ? (
     p == learn_count ? ( rgb(C_WARN); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); );
   ) : pdrag_on && hover_pad == p && p != pdrag - 1 ? (
     rgb(C_WARN); gfx_rect(px, py, ps, ps, 0); gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0); gfx_rect(px + 2, py + 2, ps - 4, ps - 4, 0);
-  ) : SEL[p] && CU_SET[p] ? (
+  ) : SEL[p] && CU_SET[p] && !look ? (
+    // LCARS marks no selection on the pads: outlines and dots clash with the
+    // flat round shapes; the lit pad and the parameter row's cap are enough
     rgb(C_TEXT); gfx_rect(px, py, ps, ps, 0);
     p == selected ? gfx_rect(px + 1, py + 1, ps - 2, ps - 2, 0);
   );
   CU_SET[p] && !learn_active ? (
-    CU_FAV[p] ? ( rgb(sounding ? C_BG : C_TEXT); gfx_circle(px + ps - 11, py + 11, 4, 1); );   // R18.4
-    gfx_setfont(2, "Arial", 13); rgb(sounding ? C_BG : C_TEXT);
-    gfx_x = px + 8; gfx_y = py + ps - 20; gfx_drawstr(cue_name(p, #pn), 0, px + ps - 4, py + ps);   // R12.6, clipped to the pad
-    gfx_setfont(1, "Arial", 17);
+    CU_FAV[p] ? ( rgb(pad_ink); gfx_circle(px + ps - (look && col == 3 ? 24 : 11), py + 11, 4, 1); );   // R18.4
+    font_small(); rgb(pad_ink);
+    cue_name(p, #pn); look ? upcase(#pn);
+    gfx_x = px + (look && col == 0 ? 16 : 8); gfx_y = look ? py + 5 : py + ps - 20;
+    gfx_drawstr(#pn, 0, px + ps - 4, py + ps);                         // R12.6, clipped to the pad
+    font_big();
   );
   learn_active && learn_step == L_PADS && p < learn_count ? (
     rgb(C_DIM); gfx_x = px + 8; gfx_y = py + ps - 20; gfx_drawstr(sprintf(#t, "note %d", LM_PAD[p]));
   );
-  rgb(sounding ? C_BG : C_TEXT);
-  gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0);
+  rgb(pad_ink);
+  look ? (
+    // LCARS: the number at the bottom right
+    sprintf(#pnum, "%d", p + 1); gfx_measurestr(#pnum, tw, th);
+    gfx_x = px + ps - tw - (col == 3 ? 16 : 8); gfx_y = py + ps - th - 2; gfx_drawstr(#pnum);
+  ) : ( gfx_x = px + 8; gfx_y = py + 6; gfx_drawnumber(p + 1, 0); );
   clicked && !learn_active && inside(px, py, ps, ps) ? (
     shift_held ? del_req = p + 1                                       // R11.2
     : mouse_cap & 4 ? sel_toggle(p)                                    // R18.1
@@ -2495,8 +2648,8 @@ released ? (
 );
 
 // side panel: selection, favourites, undo, rename
-gfx_setfont(2, "Arial", 13);
-sx = pad + 4 * ps + 3 * gap + 24; sy = pads_y; sw = 120; sh = 26;
+font_small();
+sx = cl + 4 * ps + 3 * gap + 24; sy = pads_y; sw = 120; sh = 26;
 ready = state == S_READY && !learn_active;
 button(sx, sy, sw, sh, all_selected() ? "Clear selection" : "Select all", 0) && ready ? select_all();   // R18.2, R18.3
 button(sx, sy + 34, sw, sh, "Favourite", 0) && ready ? toggle_fav();                                     // R18.4
@@ -2523,7 +2676,8 @@ rename_on ? (
   rgb(C_DIM);
   text_at(sx, sy + 172, "Cmd-click: select several");
   text_at(sx, sy + 188, "Shift-click: delete");
-  text_at(sx, sy + 204, "Drag: move or swap, Alt-drag: copy");
+  text_at(sx, sy + 204, "Drag: move or swap");
+  text_at(sx, sy + 220, "Alt-drag: copy");
 );
 // Auto set (R13, R14): mode, slice length or hit count, run, shift slices
 ax = sx + sw + 24; aw = 150;
@@ -2537,7 +2691,7 @@ button(ax + aw - 26, sy + 34, 26, sh, "+", 0) && ready ? (
 );
 rgb(C_TEXT);
 auto_mode == 0 ? slice_name() : sprintf(#sln, "%d hits", 16 - fs_drop);
-gfx_measurestr(#sln, tw, th); text_at(ax + (aw - tw) / 2, sy + 34 + (sh - th) / 2, #sln);
+measure(#sln); text_at(ax + (aw - tw) / 2, sy + 34 + (sh - th) / 2, #sln);
 button(ax, sy + 68, aw, sh, auto_mode == 0 ? "Slice from playhead" : "Find samples", 0) && ready ? auto_req = 1;
 auto_mode == 0 ? (
   button(ax, sy + 102, aw / 2 - 3, sh, "< Shift", 0) && ready && sl_on ? auto_req = 2;
@@ -2554,7 +2708,8 @@ button(ax, sy + 190, aw, sh, sprintf(#t, "%s  ▾", ctrl_name(ctrl)), 0) && !lea
     ctrl == CT_LEARNED ? "!" : gmem_has_map() ? "" : "#", ctrl_name(CT_LEARNED)));
   menu_pick > 0 ? ctrl_req = menu_pick;
 );
-button(ax, sy + 224, aw, sh, "Learn", learn_active) && !learn_active ? learn_req = 1;           // R20.2
+button(ax, sy + 224, aw / 2 - 3, sh, "Learn", learn_active) && !learn_active ? learn_req = 1;   // R20.2
+button(ax + aw / 2 + 3, sy + 224, aw / 2 - 3, sh, "LCARS", look) ? look = !look;               // R7.13, R7.14
 
 mouse_down = mouse_cap & 1;      // undo waits for the end of a drag
 

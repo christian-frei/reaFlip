@@ -3,8 +3,8 @@ feature: slab-sampler
 title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-10-27
-revision: 11
+date: 2026-10-29
+revision: 12
 status: ready
 ---
 
@@ -118,6 +118,10 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R7.10 — While Freeze is off, when the producer plays a pad, the system shall show that pad's cue start one tenth of the main waveform's width from its left edge.
 - R7.11 — While Freeze is off, when a played pad stops sounding, the system shall show that pad's cue start one tenth of the main waveform's width from its left edge again.
 - R7.12 — When the producer drags the current-view box in the overview, the system shall move the main waveform's view with it, keeping the zoom.
+- R7.13 — The system shall offer two looks per instance, Standard and LCARS, with Standard in a new instance.
+- R7.14 — When the producer switches the look, the system shall redraw the window in that look and keep every control in place and working.
+- R7.15 — While the LCARS look is on, the system shall colour the cues along one gradient from pad 1 to pad 16, from orange through peach and lilac to blue.
+- R7.16 — While the LCARS look is on, if the condensed LCARS typeface (Antonio) is not installed, then the system shall use a condensed system typeface. _(why: a plugin cannot ship a font)_
 
 ### R8: Edit the beatgrid
 - R8.1 — When the producer enters grid edit, the system shall show the bar and beat markers on the main waveform.
@@ -399,3 +403,4 @@ None.
 - r9 — view follows pad hits: cue start at 10 % on a hit and again when it stops (R7.10, R7.11); overview view box can be dragged (R7.12).
 - r10 — stretch algorithm per instance: drums or melodic, drums by default (R23.11 added).
 - r11 — preconfigured controllers: MIDI controller list with AlphaTheta SLAB (default), Pads only and Learned (R20.1, R20.9, R20.14 changed, R20.16–R20.18 added); Q1 resolved by AlphaTheta's MIDI message list and a Learn run on the unit.
+- r12 — optional LCARS look per instance with gradient cue colours and a typeface fallback (R7.13–R7.16 added).

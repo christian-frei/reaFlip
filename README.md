@@ -26,6 +26,7 @@ General MIDI mode. Not affiliated with or endorsed by Serato or AlphaTheta.
 | **Shape** | Per cue: level, attack, release, filter, key, reverse, loop mode, crossfade. |
 | **Stretch** | Sync to the project tempo, 0.25–4× per cue, key shift that keeps the tempo. Two engines: **Drums** (WSOLA) and **Melodic** (phase vocoder). |
 | **Organise** | Multi-select, favourites, move, swap, copy, rename, undo/redo. |
+| **Looks** | Standard, or an LCARS look: framed, pill buttons, cue colours on one gradient. |
 | **Controller** | MIDI Learn for pads, dial, encoders, buttons and touch strip. The map is shared by all instances. |
 
 ## Prerequisites
@@ -88,7 +89,12 @@ optional, for installing and updating.
 | Drag | Move or swap |
 | Alt-drag | Copy |
 
-The project saves the source path, section, cues, grid and MIDI map. If the
+**LCARS** (next to Learn) switches this instance to the LCARS look. It uses
+the [Antonio](https://fonts.google.com/specimen/Antonio) font when it is
+installed (install the files from its `static` folder, Bold included),
+otherwise a condensed system font.
+
+The project saves the source path, section, cues, grid, MIDI map and look. If the
 file is moved or renamed, ReaFlip shows a message and keeps all cues.
 
 ## MIDI controller

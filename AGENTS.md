@@ -155,8 +155,9 @@ project rate (resample on playback, linear interpolation is fine for v1).
   mapping.
 - `@gfx` — overview + main waveform, cue handles and regions, playhead,
   zoom/freeze/grid controls, 4×4 pads, parameter row, learn flow. `gfx_*`
-  only, no external bitmaps; one dark theme with colours defined once.
-  Waveform draws from peaks computed once per load.
+  only, no external bitmaps; two looks (Standard, LCARS), each with its
+  colours defined once in `set_look()`. Waveform draws from peaks computed
+  once per load.
 
 ### Implementation notes per area
 
@@ -231,6 +232,19 @@ project rate (resample on playback, linear interpolation is fine for v1).
   - Reads outside the voice's `LO..HI` are silence, so a stretched cue never
     plays past its bounds. EEL2 names are case-insensitive: never use `b`
     and `B` (or `d` and `D`) in one function.
+- **Looks** (R7.13–R7.16, spec r12): `look` per instance, saved in
+  `@serialize` (format v12), toggled by the LCARS button next to Learn.
+  Layout goes through the content box `cl`/`cr`/`ct`/`cb`; in LCARS it sits
+  inside the frame (`lcars_frame()`: elbows, bars, one block per section on
+  the left, sized from the section positions). `button()` draws pills,
+  `rbox()` round-ended boxes; pads in a row read as one bar. Cue colours come
+  from `PALC` (`PALETTE` or the gradient `LPAL`). LCARS text is upper case
+  through `text_at()`/`measure()`. Font: Antonio if installed, else Avenir
+  Next Condensed, Bahnschrift Condensed, Arial Narrow, Arial; a face counts
+  as installed when it sets text clearly narrower than Arial, because a
+  missing face silently falls back to a wide default. Overlapping round
+  ends rule out `gfx_a` on LCARS shapes: blend colours with `mix()` instead.
+  Design rules for the look: `~/.claude/skills/lcars`.
 - **Lazy chop** (R9): state machine — idle / pass running; pass ends on stop
   or when all 16 pads hold cues.
 
