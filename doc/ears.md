@@ -3,8 +3,8 @@ feature: slab-sampler
 title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-10-29
-revision: 12
+date: 2026-11-02
+revision: 13
 status: ready
 ---
 
@@ -97,13 +97,14 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R5.5 — While the source file is missing, when the producer loads a selected media item, the system shall use it as the source and keep all cues, as in R2.
 
 ### R6: Play the source
-- R6.1 — When the producer presses play, the system shall play the source from the playhead.
-- R6.2 — While the source is playing, when the producer presses pause, the system shall stop playback and leave the playhead where it stopped.
+- R6.1 — While no audition runs, when the producer presses Play, the system shall play the source from its beginning (an audition). _(why: Play is for hearing the whole sample, not for chopping)_
+- R6.2 — While an audition runs, when the producer presses Play, the system shall stop playback and leave the playhead where it stopped.
 - R6.3 — When the producer drags across the main waveform, the system shall move the playhead with the drag (scrub).
 - R6.4 — When the producer clicks the waveform overview, the system shall move the playhead to the clicked position.
 - R6.5 — The system shall show the current tempo of the source in BPM.
 - R6.6 — When the producer chooses double or half tempo, the system shall double or halve the BPM, with the beatgrid following it.
 - R6.7 — If no source is loaded, then the system shall ignore play, scrub and seek.
+- R6.8 — The system shall show Play as on only while an audition runs, not while the source plays for any other reason.
 
 ### R7: View the waveform
 - R7.1 — The system shall show an overview of the whole source with all cues and the playhead.
@@ -299,7 +300,6 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R20.12 — The system shall pass on every MIDI message it does not use, unchanged.
 
 ### R21: Control from SLAB
-- R21.1 — When the producer presses the dial, the system shall toggle play and pause of the source.
 - R21.2 — When the producer turns encoder 1, the system shall change the selected cues' level.
 - R21.3 — When the producer turns encoder 2, the system shall change the selected cues' filter.
 - R21.4 — When the producer turns encoder 3, the system shall change the selected cues' attack.
@@ -313,7 +313,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R21.12 — When the producer presses Shift + Favourite, the system shall switch between Mono and Poly.
 - R21.13 — When the producer presses Select All, the system shall select or clear all as in R18.2 and R18.3.
 - R21.14 — When the producer presses Trigger Mode, the system shall switch between Hold and Trigger.
-- R21.15 — When the producer presses Play, the system shall toggle play and pause of the source.
+- R21.15 — When the producer presses Play, the system shall act as Play in R6.1 and R6.2.
 - R21.16 — When the producer presses Strip Mode, the system shall cycle the touch strip through Filter, Pad Level and Loop Crossfade.
 - R21.17 — While the touch strip is in Filter mode, when the producer touches the strip, the system shall set the selected cues' filter from the touched position.
 - R21.18 — While the touch strip is in Pad Level mode, when the producer touches the strip, the system shall set the selected cues' level from the touched position.
@@ -348,6 +348,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - Playhead — the current position in the source.
 - Beatgrid — bar and beat positions derived from one tempo and one grid start.
 - Lazy chop — creating cues by hitting empty pads while the source plays through once.
+- Audition — playback of the source started with Play, from its beginning, until it is paused or plays to the end.
 - Lazy chop pass — the run from the first empty-pad press until playback stops or all pads hold cues.
 - Hold mode — a cue plays while its pad is held. Trigger mode — a cue plays to its end once hit.
 - Mono / Poly — one cue sounds at a time / several cues sound at once.
@@ -404,3 +405,4 @@ None.
 - r10 — stretch algorithm per instance: drums or melodic, drums by default (R23.11 added).
 - r11 — preconfigured controllers: MIDI controller list with AlphaTheta SLAB (default), Pads only and Learned (R20.1, R20.9, R20.14 changed, R20.16–R20.18 added); Q1 resolved by AlphaTheta's MIDI message list and a Learn run on the unit.
 - r12 — optional LCARS look per instance with gradient cue colours and a typeface fallback (R7.13–R7.16 added).
+- r13 — Play auditions the source from its beginning and pauses on a second press; Play lit only during an audition (R6.1, R6.2, R21.15 changed, R6.8 added, Terms: Audition); dial press dropped (R21.1 retired).

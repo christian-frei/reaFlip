@@ -103,7 +103,7 @@ RAMP_S = 0.002;                   // click-free start/stop (R15.12)
 // SHIFT + x steps exist because a controller may send other messages while
 // its Shift is held.
 L_PADS = 0; L_DIAL = 1; L_SHIFT = 2; L_SDIAL = 3; L_DELETE = 4; L_LEFT = 5; L_RIGHT = 6;
-L_DIALPRESS = 7; L_PLAY = 8; L_TRIG = 9; L_STRIPMODE = 10;
+L_DIALPRESS = 7; L_PLAY = 8; L_TRIG = 9; L_STRIPMODE = 10;   // dial press retired (R21.1): id kept so saved maps stay valid
 L_ENC1 = 11; L_ENC1P = 15;        // encoders 1-4 turn: 11..14, press: 15..18
 L_UNDO = 19; L_REDO = 20; L_AUTOSET = 21; L_SAUTOSET = 22; L_FAV = 23; L_SFAV = 24;
 L_SELALL = 25; L_SSELALL = 26; L_NOTEREP = 27;
@@ -180,7 +180,7 @@ function all_voices_off()
 (
   memset(V_ST, VS_OFF, NV);
   memset(V_ENV, 0, NV);
-  src_playing = 0;
+  src_playing = 0; audition = 0;
   lazy_pass = 0;
   ph_voice = -1;
 );
@@ -774,8 +774,15 @@ function src_stop()
     V_REL[SRC] = V_ENV[SRC] / ramp_n;
     V_ST[SRC] = VS_REL;
   );
-  src_playing = 0;
+  src_playing = 0; audition = 0;
   lazy_pass = 0;                 // R9.8
+);
+
+// Play auditions the whole source from its beginning; a second press pauses
+// (R6.1, R6.2). Only Play's own run counts, not a lazy chop pass (R6.8).
+function play_press()
+(
+  audition ? src_stop() : ( src_start(0); audition = 1; lazy_pass = 0; );
 );
 
 function seek(pos)
@@ -970,7 +977,7 @@ function map_slab() local(i)
   mset(L_DIAL, K_CC, 60, E_SIGNBIT, 1);     mset(L_SHIFT, K_NOTE, 70, 0, 1);
   mset(L_SDIAL, K_CC, 61, E_SIGNBIT, 1);    mset(L_DELETE, K_NOTE, 94, 0, 7);
   mset(L_LEFT, K_NOTE, 100, 0, 1);          mset(L_RIGHT, K_NOTE, 101, 0, 1);
-  mset(L_DIALPRESS, K_NOTE, 98, 0, 1);      mset(L_PLAY, K_NOTE, 94, 0, 1);
+  mset(L_PLAY, K_NOTE, 94, 0, 1);
   mset(L_TRIG, K_NOTE, 112, 0, 7);          mset(L_STRIPMODE, K_NOTE, 64, 0, 7);
   i = 0; loop(4,
     mset(L_ENC1 + i, K_CC, 16 + i, E_SIGNBIT, 1);
@@ -1050,6 +1057,7 @@ function learn_start()
 function learn_next()
 (
   learn_step += 1; learn_count = 0; learn_phase = 0; g_on = 0; has_learn_err = 0;
+  learn_step == L_DIALPRESS ? learn_step += 1;
   learn_step >= NSTEPS ? learn_done = 1;
 );
 
@@ -1500,8 +1508,8 @@ function slab_control(k, val) local(d, i, pr, f, q, ds)
       : ( slab_delete && !delete_used ? delete_selected(); slab_delete = 0; );
     )
     : pr ? (
-      k == L_DIALPRESS || k == L_PLAY ? (                                    // R21.1, R21.15
-        state == S_READY ? ( src_playing ? src_stop() : src_start(ph); );
+      k == L_PLAY ? (                                                        // R21.15
+        state == S_READY ? play_press();
       ) : k == L_TRIG ? (
         slider2 = !slider2; slider_automate(slider2);                        // R21.14
       ) : (k == L_AUTOSET && slab_shift) || k == L_SAUTOSET ? (
@@ -1544,7 +1552,7 @@ function route_midi(offset, m1, m2, m3) local(st, ch, i, k, val, hit)
   hit = 0;
   k = 1;
   loop(NSTEPS - 1,
-    !hit && M_KIND[k] != K_NONE && (M_CHN[k] == 0 || M_CHN[k] == ch) ? (
+    !hit && k != L_DIALPRESS && M_KIND[k] != K_NONE && (M_CHN[k] == 0 || M_CHN[k] == ch) ? (
       M_KIND[k] == K_NOTE && (st == 0x90 || st == 0x80) && m2 == M_NUM[k] ? ( hit = 1; slab_control(k, st == 0x90 ? m3 : 0); )
       : M_KIND[k] == K_CC && st == 0xB0 && m2 == M_NUM[k] ? ( hit = 1; slab_control(k, m3); )
       : M_KIND[k] == K_PB && st == 0xE0 ? ( hit = 1; slab_control(k, (m3 * 128 + m2) / 16383 * 127); );
@@ -1624,7 +1632,7 @@ state == S_READY ? (
 
 // requests from the window, applied here so only the audio thread touches voices
 state == S_READY ? (                                      // R6.7: ignored without a source
-  play_req ? ( src_playing ? src_stop() : src_start(ph); );
+  play_req ? play_press();
   seek_req ? seek(seek_pos);
   del_req ? delete_cue(del_req - 1);
 );
@@ -1778,7 +1786,7 @@ state == S_READY ? (
   // the playhead follows the source player, or else the last triggered cue
   src_playing ? (
     V_ST[SRC] == VS_OFF ? (
-      src_playing = 0; lazy_pass = 0;                     // played to the end (R9.8)
+      src_playing = 0; audition = 0; lazy_pass = 0;       // played to the end (R9.8)
       ph = frames - 1;
     ) : ph = V_POS[SRC];
   ) : ph_voice >= 0 ? (
@@ -2439,22 +2447,24 @@ learn_active ? (
     button(mw_x + mw_w - 170, mw_y + 10, 76, 26, "Confirm", 1) ? learn_req = 4;
     rgb(C_TEXT); text_at(lx, ly, sprintf(#t, "Learn done. Pads: notes %d..%d, channel %s.", LM_PAD[0], LM_PAD[15],
       LM_CH > 0 ? sprintf(#t2, "%d", LM_CH) : "any"));
-    k = 1;
+    k = 1; j = 0;
     loop(NSTEPS - 1,
-      cx = lx + floor((k - 1) / 10) * 290; cy = ly + 20 + ((k - 1) % 10) * 13;
-      rgb(LM_KIND[k] ? C_TEXT : C_DIM);
-      text_at(cx, cy, sprintf(#t, "%s: %s", learn_name(k),
-        LM_KIND[k] == K_NOTE ? sprintf(#t2, "note %d ch %d", LM_NUM[k], LM_CHN[k])
-        : LM_KIND[k] == K_PB ? sprintf(#t2, "pitch bend ch %d", LM_CHN[k])
-        : LM_KIND[k] == K_CC ? sprintf(#t2, "CC %d ch %d%s", LM_NUM[k], LM_CHN[k],
-            LM_ENC[k] == E_CENTER ? " (64 +/- n)" : LM_ENC[k] == E_TWOS ? " (twos)"
-            : LM_ENC[k] == E_SIGNBIT ? " (sign bit)" : LM_ENC[k] == E_ABS ? " (absolute)" : "")
-        : LM_KIND[k] == K_SAME ? "same as without SHIFT" : "skipped"));
+      k != L_DIALPRESS ? (
+        cx = lx + floor(j / 10) * 290; cy = ly + 20 + (j % 10) * 13; j += 1;
+        rgb(LM_KIND[k] ? C_TEXT : C_DIM);
+        text_at(cx, cy, sprintf(#t, "%s: %s", learn_name(k),
+          LM_KIND[k] == K_NOTE ? sprintf(#t2, "note %d ch %d", LM_NUM[k], LM_CHN[k])
+          : LM_KIND[k] == K_PB ? sprintf(#t2, "pitch bend ch %d", LM_CHN[k])
+          : LM_KIND[k] == K_CC ? sprintf(#t2, "CC %d ch %d%s", LM_NUM[k], LM_CHN[k],
+              LM_ENC[k] == E_CENTER ? " (64 +/- n)" : LM_ENC[k] == E_TWOS ? " (twos)"
+              : LM_ENC[k] == E_SIGNBIT ? " (sign bit)" : LM_ENC[k] == E_ABS ? " (absolute)" : "")
+          : LM_KIND[k] == K_SAME ? "same as without SHIFT" : "skipped"));
+      );
       k += 1;
     );
   ) : (
     learn_step > L_DIAL ? ( button(mw_x + mw_w - 170, mw_y + 10, 76, 26, "Skip", 0) ? learn_req = 2; );
-    rgb(C_DIM); text_at(lx, ly, sprintf(#t, "Learn  -  step %d of %d", learn_step + 1, NSTEPS));
+    rgb(C_DIM); text_at(lx, ly, sprintf(#t, "Learn  -  step %d of %d", learn_step + (learn_step < L_DIALPRESS), NSTEPS - 1));
     font_big(); rgb(C_TEXT);
     kk = step_kind(learn_step);
     kb = shift_base(learn_step);
@@ -2464,7 +2474,6 @@ learn_active ? (
         kb >= 0 ? "Hold SHIFT and turn" : learn_phase == 0 ? "Turn" : "Now turn",
         learn_step == L_DIAL || learn_step == L_SDIAL ? "the dial" : learn_name(learn_step), learn_count);
     )
-    : learn_step == L_DIALPRESS ? strcpy(#t, "Press the dial down.")
     : learn_step >= L_ENC1P && learn_step < L_ENC1P + 4 ? sprintf(#t, "Press encoder %d down (a touch is not enough).", learn_step - L_ENC1P + 1)
     : kk == 2 ? sprintf(#t, kb >= 0 ? "Hold SHIFT and press %s." : "Press %s.", learn_name(kb >= 0 ? kb : learn_step))
     : strcpy(#t, "Slide a finger along the touch strip.");
@@ -2496,7 +2505,7 @@ mon_count ? (
 
 // controls; mode changes go through slider_automate so REAPER records them
 bw = 64; bx = cl;
-button(bx, bar_y, bw, bh, src_playing ? "Pause" : "Play", src_playing) ? play_req = 1;      // R6.1, R6.2
+button(bx, bar_y, bw, bh, audition ? "Pause" : "Play", audition) ? play_req = 1;            // R6.1, R6.2, R6.8
 bx += bw + 12;
 button(bx, bar_y, bw, bh, "Hold", slider2 == 0) ? ( slider2 = 0; slider_automate(slider2); ); bx += bw;
 button(bx, bar_y, bw, bh, "Trigger", slider2 == 1) ? ( slider2 = 1; slider_automate(slider2); ); bx += bw + 12;
