@@ -92,8 +92,11 @@ end
 local function make_live_ready(track)
   reaper.SetMediaTrackInfo_Value(track, "I_RECINPUT", 4096 + 63 * 32)
   reaper.SetMediaTrackInfo_Value(track, "I_RECMON", 1)
-  reaper.SetMediaTrackInfo_Value(track, "I_RECARM", 1)
+  -- through the control-surface call, so the arm button redraws at once
+  reaper.CSurf_OnRecArmChangeEx(track, 1, false)
   reaper.SetOnlyTrackSelected(track)
+  reaper.Main_OnCommand(40914, 0) -- Track: Set first selected track as last touched track
+  reaper.Main_OnCommand(40913, 0) -- Track: Vertical scroll selected tracks into view
 end
 
 -- gmem is shared by every instance in REAPER, so the request carries a token
