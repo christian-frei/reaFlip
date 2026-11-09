@@ -130,7 +130,6 @@ not react).
 | SLAB control | Function |
 |---|---|
 | Dial / Shift + dial | Move the selected cue's start / end |
-| PLAY | Audition the source from its beginning / pause |
 | Left / right arrow | Move the selected cue's end one beat earlier / later |
 | Encoders 1–4 | Level, filter, attack, key (press resets) |
 | DELETE / DELETE + pad | Delete the selected cues / that pad |

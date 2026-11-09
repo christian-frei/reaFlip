@@ -274,6 +274,9 @@ encoded; encoders are touch-sensitive (touch = note 24–27 ch 1, press = note
 32–35 ch 1, then touch notes again until release); SHIFT note 70 ch 1;
 touch strip CC 14 or 16 ch 7 (two runs differed). Buttons are spread over
 ch 1 and ch 7 with shared note numbers (DELETE and PLAY are both note 94).
+There is no Play (spec r14): the PLAY button and the dial press are
+retired Learn steps, their ids kept so saved maps stay valid, and their
+messages pass through.
 With SHIFT held the SLAB sends other messages (hence R20.15): dial CC 61,
 AUTO SET / FAVORITE / SELECT ALL their note + 1 (81, 83, 97 ch 7).
 
