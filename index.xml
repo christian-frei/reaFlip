@@ -6,6 +6,11 @@
         <link rel="website">https://github.com/christian-frei/reaFlip</link>
         <link rel="screenshot" href="https://raw.githubusercontent.com/christian-frei/reaFlip/main/doc/screenshot.png">ReaFlip window</link>
       </metadata>
+      <version name="0.2.3" author="Christian Frei" time="2026-11-11T10:14:58Z">
+        <changelog>Only pads make sound: an empty pad with lazy chop on plays just its new cue; the sample never runs through on its own. Trigger mode is the default for new instances. No cue sounds past its end marker, not even while fading or crossfading a loop.</changelog>
+        <source>https://raw.githubusercontent.com/christian-frei/reaFlip/v0.2.3/ReaFlip.jsfx</source>
+        <source file="ReaFlip_Load.lua" type="script" main="main">https://raw.githubusercontent.com/christian-frei/reaFlip/v0.2.3/ReaFlip_Load.lua</source>
+      </version>
       <version name="0.2.2" author="Christian Frei" time="2026-11-09T13:02:10Z">
         <changelog>Play removed: the Play button and the SLAB's PLAY button no longer start or stop the sample. It plays only during a lazy chop pass. Saved projects and learned maps keep working.</changelog>
         <source>https://raw.githubusercontent.com/christian-frei/reaFlip/v0.2.2/ReaFlip.jsfx</source>
