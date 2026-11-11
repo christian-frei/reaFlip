@@ -20,7 +20,7 @@ General MIDI mode. Not affiliated with or endorsed by Serato or AlphaTheta.
 | | |
 |---|---|
 | **Load** | The selected item's visible section, straight from the file. The source file is only read, never changed. |
-| **Chop** | Lazy chop while the source plays, draggable start/end handles, Quantize to 1/8 beat. |
+| **Chop** | Lazy chop: an empty pad sets a cue at the playhead and plays it. Draggable start/end handles, Quantize to 1/8 beat. |
 | **Auto set** | **Slicer**: equal slices of 1/16–16 beats. **Find**: cues on the 4–16 loudest hits, placed on zero crossings. |
 | **Beatgrid** | Tempo and downbeat are detected on load. Double, halve, tap, or drag the grid by hand. |
 | **Shape** | Per cue: level, attack, release, filter, key, reverse, loop mode, crossfade. |
@@ -67,8 +67,9 @@ optional, for installing and updating.
    - To fix it, open **Grid** edit: drag markers, Alt-drag to slide, type a
      BPM, tap, set the start, or use the metronome.
 3. **Cues.**
-   - **Lazy chop**: hit empty pads while the source plays. Each hit drops a
-     cue.
+   - **Lazy chop**: hit an empty pad. It gets a cue at the playhead and
+     plays it; hit the next empty pad while it plays to chop on from there.
+     Nothing else ever starts the sample.
    - **Auto set**: Slicer or Find (see Features). Favourite pads are kept.
    - Drag the start and end handles in the main waveform.
 4. **Shape.** Edit the selected cues in the parameter row.

@@ -202,10 +202,12 @@ project rate (resample on playback, linear interpolation is fine for v1).
   in the parameter row Alt-click resets (R17.9) and Cmd/Ctrl-drag is fine
   (R17.10); Cmd/Ctrl-click on a pad adds or removes it from the selection
   (R18.1); Alt held when a dragged pad is dropped copies (R12.3).
-- **Loops** (R17.19–17.27): at every seam the outgoing pass carries on past
-  the boundary in a tail voice and fades out while the next pass fades in,
-  over the cue's crossfade (at least the 2 ms ramp, so a crossfade of 0
-  never clicks). Backward plays one pass in the playing direction, then
+- **Loops** (R17.19–17.27): the seam starts one crossfade before the end of
+  a pass: the outgoing pass fades out in a tail voice and reaches silence
+  exactly at the boundary while the next pass fades in, over the cue's
+  crossfade (at least the 2 ms ramp, so a crossfade of 0 never clicks; at
+  most half a pass). Tails keep the cue's bounds, so nothing ever sounds past
+  the end marker (R15.19). Backward plays one pass in the playing direction, then
   repeats against it; alternate turns at every seam.
 - **Filter** (R17.4–17.6): RBJ biquad per voice, Q 0.707, cutoff on a log
   scale 17 kHz → 80 Hz; recomputed in `@block` when the cue's value changes
@@ -245,8 +247,11 @@ project rate (resample on playback, linear interpolation is fine for v1).
   missing face silently falls back to a wide default. Overlapping round
   ends rule out `gfx_a` on LCARS shapes: blend colours with `mix()` instead.
   Design rules for the look: `~/.claude/skills/lcars`.
-- **Lazy chop** (R9): state machine — idle / pass running; pass ends on stop
-  or when all 16 pads hold cues.
+- **Lazy chop** (R9, spec r15): no state. An empty pad gets a cue at the
+  playhead and, with lazy chop on, plays it through `play_cue` like any pad.
+  There is no source player: only pad voices sound, and the playhead follows
+  the last triggered cue (`ph_voice`). Tap tempo and the metronome follow
+  that playhead too.
 
 ## MIDI and SLAB
 
@@ -274,7 +279,7 @@ encoded; encoders are touch-sensitive (touch = note 24–27 ch 1, press = note
 32–35 ch 1, then touch notes again until release); SHIFT note 70 ch 1;
 touch strip CC 14 or 16 ch 7 (two runs differed). Buttons are spread over
 ch 1 and ch 7 with shared note numbers (DELETE and PLAY are both note 94).
-There is no Play (spec r14): the PLAY button and the dial press are
+There is no Play (spec r14, r15): the PLAY button and the dial press are
 retired Learn steps, their ids kept so saved maps stay valid, and their
 messages pass through.
 With SHIFT held the SLAB sends other messages (hence R20.15): dial CC 61,

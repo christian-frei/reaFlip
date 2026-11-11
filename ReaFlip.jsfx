@@ -8,7 +8,7 @@ options:maxmem=4194304
 // Hidden: the load action writes a random token here so that only this
 // instance answers its gmem request (gmem is shared by all instances).
 slider1:0<0,1000000,1>-load token
-slider2:0<0,1,1{Hold,Trigger}>Cue play mode
+slider2:1<0,1,1{Hold,Trigger}>Cue play mode
 slider3:0<0,1,1{Mono,Poly}>Voice mode
 slider4:1<0,1,1{Off,On}>Velocity
 slider5:1<0,1,1{Off,On}>Lazy chop
@@ -74,9 +74,9 @@ i = 0; loop(PV_N, PV_WIN[i] = 0.5 - 0.5 * cos(2 * $pi * i / PV_N); i += 1);
 memset(FFTB, 0, 2 * PV_N); FFTB[0] = 1;
 fft(FFTB, PV_N); fft_permute(FFTB, PV_N); fft_ipermute(FFTB, PV_N); ifft(FFTB, PV_N);
 pv_sc = 1 / (max(abs(FFTB[0]), 0.000001) * 1.5);   // 1.5: Hann squared at 4x overlap
-// voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice,
-// 32 plays the source itself (play/pause and lazy chop)
-NV = 33; SRC = 32;
+// voices: 0..15 belong to pads, 16..31 are tails that fade out a cut voice.
+// Only pads make sound: there is no source player (spec r15).
+NV = 32;
 // One field per 40 values, so copy_voice can walk them. Positions are in
 // source frames; a voice plays between LO and HI in direction DIR.
 V_ST = 1730000; NVF = 42;
@@ -180,8 +180,6 @@ function all_voices_off()
 (
   memset(V_ST, VS_OFF, NV);
   memset(V_ENV, 0, NV);
-  src_playing = 0;
-  lazy_pass = 0;
   ph_voice = -1;
 );
 
@@ -528,27 +526,22 @@ function new_cue(p, t)
   CU_STR[p] = 0; CU_KT[p] = 0;                                                 // R23.5, R23.6
 );
 
-function all_pads_set() local(i, n)
-(
-  n = 0; i = 0;
-  loop(NPADS, n += CU_SET[i]; i += 1);
-  n == NPADS;
-);
-
 function copy_voice(src, dst) local(k)
 (
   k = 0; loop(NVF, V_ST[dst + k * 40] = V_ST[src + k * 40]; k += 1);
   V_GON[src] == 2 ? memcpy(PV_BASE + dst * PVS, PV_BASE + src * PVS, PVS);
 );
 
-// Fade a voice out over n samples in a tail slot, carrying on in its current
-// direction past its bounds, with its filter state, so nothing clicks.
+// Fade a voice out over n samples in a tail slot, with its filter state, so
+// nothing clicks. The tail keeps the cue's bounds: a chop never sounds past
+// its end marker (R15.19), and near the end the fade is shortened to land
+// on it.
 function to_tail(v, n) local(t)
 (
   t = NPADS + tail_next;
   tail_next = (tail_next + 1) % NPADS;
   copy_voice(v, t);
-  V_LO[t] = 0; V_HI[t] = frames - 1; V_HELD[t] = 0;
+  V_HELD[t] = 0;
   V_REL[t] = V_ENV[v] / max(n, 1);
   V_ST[t] = VS_REL;
 );
@@ -584,13 +577,19 @@ function set_filter(v, f) local(w, c, al, a0)
   );
 );
 
-// A looping cue reached the end of a pass (R17.20-R17.23): the old
-// direction fades out in a tail while the next pass fades in, over the
-// loop crossfade (at least the click-free ramp, R15.12).
-function loop_seam(v) local(n, d, m)
+// Loop crossfade in output samples: at least the click-free ramp (R15.12),
+// at most half a pass, so a seam never follows straight on another.
+function seam_n(v, spd)
+(
+  max(min(max(CU_XF[v] * srate, ramp_n), (V_HI[v] - V_LO[v]) / spd / 2), 1);
+);
+
+// A looping cue is n samples before the end of a pass (R17.20-R17.23): the
+// old pass fades out in a tail and ends silent exactly at the boundary, never
+// past it (R15.19), while the next pass fades in.
+function loop_seam(v, n) local(d, m)
 (
   d = V_DIR[v]; m = CU_LOOP[v];
-  n = max(min(CU_XF[v], (V_HI[v] - V_LO[v]) / fsr) * srate, ramp_n);
   to_tail(v, n);
   m == 3 || (m == 2 && d == V_PDIR[v]) ? (
     // alternate turns at every seam; backward turns once, after the first pass
@@ -751,41 +750,13 @@ function pv_reset(v)
   loop(4, pv_frame(v));
 );
 
-// the source player: plays from a position to the section end (R6.1)
-function src_start(pos)
-(
-  cut(SRC);
-  V_POS[SRC] = max(0, min(pos, frames - 1));
-  V_LO[SRC] = 0; V_HI[SRC] = frames;
-  V_DIR[SRC] = V_PDIR[SRC] = 1; V_SPD[SRC] = 1; V_XG[SRC] = 1; V_FON[SRC] = 0;
-  V_TSP[SRC] = sync_r; V_GON[SRC] = 0;                    // R23.2: the source follows Sync too
-  V_ENV[SRC] = 0; V_ATT[SRC] = 1 / ramp_n; V_RELSET[SRC] = 0;
-  V_GAIN[SRC] = 1; V_HELD[SRC] = 0;
-  V_ST[SRC] = VS_ATT;
-  src_playing = 1;
-  ph_voice = -1;
-  ph = V_POS[SRC];
-);
-
-function src_stop()
-(
-  ph = V_POS[SRC];               // R6.2: the playhead stays where it stopped
-  V_ST[SRC] == VS_ATT || V_ST[SRC] == VS_SUS ? (
-    V_REL[SRC] = V_ENV[SRC] / ramp_n;
-    V_ST[SRC] = VS_REL;
-  );
-  src_playing = 0;
-  lazy_pass = 0;                 // R9.8
-);
-
 function seek(pos)
 (
-  src_playing ? src_start(pos) : ( ph = max(0, min(pos, frames - 1)); ph_voice = -1; );
+  ph = max(0, min(pos, frames - 1)); ph_voice = -1;
 );
 
 function play_cue(p, vel) local(i)
 (
-  src_playing ? src_stop();      // one playhead: the cue takes it over
   slider3 == 0 ? (               // R16.2: Mono stops every other cue
     i = 0;
     loop(NPADS, i != p ? cut(i); i += 1);
@@ -855,18 +826,11 @@ function pad_press(p, vel)
 (
   state == S_READY ? (                                    // R9.12, R15.14
     !CU_SET[p] ? (
-      new_cue(p, ph / fsr);                               // R9.2, R9.4, R9.10
+      new_cue(p, ph / fsr);                               // R9.2, R9.10
       select_only(p);
-      slider5 ? (
-        // lazy chop: an empty pad starts a pass; while it runs the source
-        // keeps playing and every empty pad drops a cue (R9.3, R9.5)
-        !src_playing ? src_start(ph);
-        lazy_pass = 1;
-        all_pads_set() ? lazy_pass = 0;                   // R9.9
-      );
-    ) : lazy_pass ? (
-      seek(CU_START[p] * fsr);                            // R9.7
-      select_only(p);
+      // lazy chop plays only the new cue, like any pad; the source never
+      // runs through on its own (R9.3)
+      slider5 ? play_cue(p, vel);
     ) : slider2 == 1 && CU_LOOP[p] && (V_ST[p] == VS_ATT || V_ST[p] == VS_SUS) ? (
       // R15.18: in Trigger mode a second press ends a looping cue
       V_REL[p] = V_ENV[p] / max(CU_REL[p] * srate, ramp_n);
@@ -1601,7 +1565,6 @@ step = fsr / srate;               // play at the file's own rate
 // Sync (R23.2-R23.4): project tempo over the source's; no grid, no change
 sync_r = slider7 && has_grid && tempo > 0 ? tempo / bpm : 1;
 i = 0; loop(NPADS, V_ST[i] != VS_OFF ? V_TSP[i] = cue_tsp(i); i += 1);   // R23.3: follows tempo changes
-V_ST[SRC] != VS_OFF ? V_TSP[SRC] = sync_r;
 // grain sizes for this rate
 g_hop != floor(0.025 * srate) ? (
   g_hop = floor(0.025 * srate);
@@ -1692,7 +1655,7 @@ state == S_READY ? (
     st != VS_OFF && st != VS_PARK ? (
       pos = V_POS[v];
       d = V_DIR[v];
-      looping = v < NPADS && CU_LOOP[v];                  // tails and the source never loop
+      looping = v < NPADS && CU_LOOP[v];                  // tails never loop
       // R23: an engine only while time and pitch rates differ
       st_gm = abs(V_TSP[v] - V_SPD[v]) > 0.000001 ? 1 + slider8 : 0;
       st_gm != V_GON[v] ? ( V_GON[v] = st_gm; st_gm == 1 ? wsola_reset(v) : st_gm == 2 ? pv_reset(v); );
@@ -1762,7 +1725,8 @@ state == S_READY ? (
       out_l += l * g; out_r += r * g;
       V_POS[v] = pos + d * spd;
 
-      looping && V_ENV[v] > 0 && (d > 0 ? V_POS[v] >= V_HI[v] : V_POS[v] <= V_LO[v]) ? loop_seam(v)
+      st_xn = looping ? seam_n(v, spd) : 0;
+      looping && V_ENV[v] > 0 && (d > 0 ? V_HI[v] - V_POS[v] : V_POS[v] - V_LO[v]) / spd <= st_xn ? loop_seam(v, st_xn)
       : V_ENV[v] <= 0 || V_POS[v] >= V_HI[v] || V_POS[v] < V_LO[v] ? (
         V_ENV[v] = 0;
         // R15.7: a held Hold-mode cue that reached its end waits silently
@@ -1772,13 +1736,8 @@ state == S_READY ? (
     v += 1;
   );
 
-  // the playhead follows the source player, or else the last triggered cue
-  src_playing ? (
-    V_ST[SRC] == VS_OFF ? (
-      src_playing = 0; lazy_pass = 0;       // played to the end (R9.8)
-      ph = frames - 1;
-    ) : ph = V_POS[SRC];
-  ) : ph_voice >= 0 ? (
+  // the playhead follows the last triggered cue
+  ph_voice >= 0 ? (
     V_ST[ph_voice] == VS_OFF ? (
       // R15.6: Hold returns to the cue start; Trigger stays where it stopped (R15.10)
       ph = slider2 == 0 ? CU_START[ph_voice] * fsr : min(V_POS[ph_voice], frames - 1);
@@ -1788,8 +1747,8 @@ state == S_READY ? (
 );
 // R8.7: a click on every grid beat while editing the grid with the
 // metronome on; the bar's first beat is higher
-ge_on && metro && has_grid && src_playing ? (
-  mb = floor((V_POS[SRC] / fsr - gs) / beat_len());
+ge_on && metro && has_grid && ph_voice >= 0 ? (
+  mb = floor((ph / fsr - gs) / beat_len());
   mb != metro_last ? ( metro_last = mb; metro_n = 0; metro_f = mb - floor(mb / 4) * 4 == 0 ? 1500 : 1000; );
 ) : metro_last = -1000000;
 metro_n < 0.03 * srate ? (
@@ -2032,20 +1991,20 @@ function drag_param(k, p, px, n) local(u, len)
 // the grid lines up with what was tapped.
 function tap() local(now, t, bl)
 (
-  src_playing ? (
+  ph_voice >= 0 ? (
     now = time_precise();
     now - tap_last > 2 ? ( tap_n = 0; tap_sum = 0; ) : ( tap_sum += now - tap_last; tap_n += 1; );
     tap_last = now;
     tap_n >= 2 ? (
       set_bpm(60 / (tap_sum / tap_n));
-      t = V_POS[SRC] / fsr;
+      t = ph / fsr;
       !has_grid ? ( has_grid = 1; gs = t; ) : (
         bl = beat_len();
         gs = t - floor((t - gs) / bl + 0.5) * bl;
       );
       norm_gs();
     ) : say("Keep tapping on the beat.");
-  ) : say("Tap while the source plays.");
+  ) : say("Tap while a cue plays.");
 );
 
 function button(x, y, w, hh, label, on) local(hot)
@@ -2251,7 +2210,7 @@ state == S_READY ? (
   mouse_wheel = 0;
 
   // keep the playhead in view while playing, unless frozen (R7.6, R7.7)
-  moving = src_playing || ph_voice >= 0;
+  moving = ph_voice >= 0;
   pht = ph / fsr;
   moving && !freeze && drag_mode == 0 && (pht < view_start || pht > view_start + view_len) ? (
     view_start = pht - view_len * 0.1;
@@ -2272,7 +2231,6 @@ state == S_READY ? (
       view_start = CU_START[view_cue] - view_len * 0.1; clamp_view();
     );
   );
-  src_playing ? view_back = 0;   // the source player owns the playhead now
 
   // overview: whole section, current view, cues and playhead (R7.1)
   rgb(C_WAVE_DIM);

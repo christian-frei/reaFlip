@@ -3,8 +3,8 @@ feature: slab-sampler
 title: ReaFlip — pad slicer for REAPER, played from an AlphaTheta SLAB
 author: Christian Frei, producer and owner
 contact: christian.frei@gmail.com
-date: 2026-11-09
-revision: 14
+date: 2026-11-10
+revision: 16
 status: ready
 ---
 
@@ -127,8 +127,8 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R8.3 — While in grid edit, when the producer drags the grid with the slip modifier held, the system shall move the whole grid without changing the BPM.
 - R8.4 — While in grid edit, when the producer changes the BPM value, the system shall redraw the grid at the new tempo from the grid start.
 - R8.5 — While in grid edit, when the producer sets the grid start, the system shall place the first downbeat at the playhead and rebuild the grid from there.
-- R8.6 — While in grid edit and the source is playing, when the producer taps the tempo, the system shall set the BPM from the tapped interval.
-- R8.7 — While in grid edit with the metronome on and the source playing, the system shall sound a click on every beat of the grid.
+- R8.6 — While in grid edit and a cue is playing, when the producer taps the tempo, the system shall set the BPM from the tapped interval.
+- R8.7 — While in grid edit with the metronome on and a cue playing, the system shall sound a click on every beat of the grid.
 - R8.8 — While in grid edit, when the producer saves, the system shall keep the edited grid.
 - R8.9 — While in grid edit, when the producer cancels, the system shall restore the grid as it was on entering grid edit.
 - R8.10 — When the producer clears the grid, the system shall remove the grid and show the BPM as unknown.
@@ -138,15 +138,9 @@ in the long run, offered to Cockos for inclusion in REAPER.
 
 ### R9: Create a cue from a pad
 - R9.1 — The system shall have lazy chop switched on in a new instance.
-- R9.2 — While lazy chop is on and the source is stopped, when the producer presses an empty pad, the system shall set a cue on that pad at the playhead.
-- R9.3 — While lazy chop is on and the source is stopped, when the producer presses an empty pad, the system shall start playing the source from that cue (starting a lazy chop pass).
-- R9.4 — While a lazy chop pass runs, when the producer presses another empty pad, the system shall set a cue on that pad at the current playhead.
-- R9.5 — While a lazy chop pass runs, when the producer presses a pad, the system shall keep the source playing without interruption.
-- R9.6 — While a lazy chop pass runs, when the producer releases a pad, the system shall keep the source playing regardless of Hold mode.
-- R9.7 — While a lazy chop pass runs, when the producer presses a pad that already holds a cue, the system shall move the playhead to that cue's start.
-- R9.8 — When the source is stopped during a lazy chop pass, the system shall end the pass.
-- R9.9 — When all 16 pads hold a cue, the system shall end the lazy chop pass.
-- R9.10 — While lazy chop is off, when the producer presses an empty pad, the system shall set a cue on that pad at the playhead without changing whether the source plays.
+- R9.2 — While lazy chop is on, when the producer presses an empty pad, the system shall set a cue on that pad at the playhead.
+- R9.3 — While lazy chop is on, when the producer presses an empty pad, the system shall play the new cue as a press on a pad with a cue does (R15). _(why: the sample must only sound from a pad, never run through on its own)_
+- R9.10 — While lazy chop is off, when the producer presses an empty pad, the system shall set a cue on that pad at the playhead without playing anything.
 - R9.11 — When a cue is created, the system shall give it the default parameters: level 0 dB, attack 0, release 0, filter off, not reversed, key shift 0, no end point.
 - R9.12 — If no source is loaded, then the system shall ignore presses on empty pads.
 
@@ -212,7 +206,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R15.1 — When the producer presses a pad that holds a cue, the system shall play the source from that cue's start.
 - R15.2 — When the producer presses a pad that holds a cue, the system shall light that pad while the cue sounds.
 - R15.3 — When the producer presses a pad that holds a cue, the system shall make that cue the selected cue.
-- R15.4 — The system shall use Hold mode in a new instance.
+- R15.4 — The system shall use Trigger mode in a new instance.
 - R15.5 — While Hold mode is on, when the producer releases the pad, the system shall begin the cue's release.
 - R15.6 — While Hold mode is on, when the cue's release has ended, the system shall return the playhead to the cue's start.
 - R15.7 — While Hold mode is on and the pad is held, when playback reaches the cue's end, the system shall pause there until the pad is released.
@@ -227,6 +221,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - R15.16 — While a cue's loop mode is not off and its pad is held in Hold mode, the system shall loop the cue between its start and end.
 - R15.17 — While Trigger mode is on and a cue's loop mode is not off, the system shall loop the cue until its pad is pressed again.
 - R15.18 — While Trigger mode is on and a looping cue sounds, when the producer presses its pad again, the system shall begin the cue's release.
+- R15.19 — The system shall never play a cue's audio beyond its end, or before its start, including its fade-outs and loop crossfades. _(why: a chop must stop at its end marker)_
 
 ### R16: Voice mode
 - R16.1 — The system shall use Mono voice mode in a new instance.
@@ -343,8 +338,7 @@ in the long run, offered to Cockos for inclusion in REAPER.
 - Selected cue — the cue last triggered or clicked; the target of dial, arrows, encoders and parameter edits.
 - Playhead — the current position in the source.
 - Beatgrid — bar and beat positions derived from one tempo and one grid start.
-- Lazy chop — creating cues by hitting empty pads while the source plays through once.
-- Lazy chop pass — the run from the first empty-pad press until playback stops or all pads hold cues.
+- Lazy chop — creating cues by hitting empty pads, each new cue playing at once.
 - Hold mode — a cue plays while its pad is held. Trigger mode — a cue plays to its end once hit.
 - Mono / Poly — one cue sounds at a time / several cues sound at once.
 - Favourite — a cue protected from being replaced by autoset.
@@ -402,3 +396,5 @@ None.
 - r12 — optional LCARS look per instance with gradient cue colours and a typeface fallback (R7.13–R7.16 added).
 - r13 — Play auditions the source from its beginning and pauses on a second press; Play lit only during an audition (R6.1, R6.2, R21.15 changed, R6.8 added, Terms: Audition); dial press dropped (R21.1 retired).
 - r14 — no Play: the source plays only during a lazy chop pass; the window and the SLAB's PLAY button no longer start or stop it (R6.1, R6.2, R6.8, R21.15 retired, R6.7 changed, Terms: Audition removed). _(why: Play kept interfering with the chopping workflow)_
+- r15 — only pads sound: an empty pad with lazy chop on plays its new cue instead of starting a pass through the source; tap tempo and the metronome follow a playing cue (R9.2, R9.3, R9.10, R8.6, R8.7 changed, R9.4–R9.9 retired, Terms: Lazy chop changed, Lazy chop pass removed). _(why: a pad hit right after a load ran the whole sample)_
+- r16 — Trigger is the play mode of a new instance (R15.4 changed); no cue sounds past its end marker, not even while fading or crossfading (R15.19 added).
